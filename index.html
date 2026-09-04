@@ -629,6 +629,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [showScanner, setShowScanner] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [scanMode, setScanMode] = useState("status"); // "status" или "add"
   const rate = settings?.rate_per_kg || 0;
 
   const load = async () => {
@@ -639,6 +640,61 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  // --- Функция для сканирования админом ---
+  const handleScan = async (decoded) => {
+    // Извлекаем трек-номер
+    let track = decoded;
+    const urlMatch = decoded.match(/\/([A-Z0-9]{8,})/i);
+    if (urlMatch) track = urlMatch[1];
+    track = track.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    
+    if (track.length < 6) {
+      alert("❌ Не удалось распознать трек-номер");
+      setShowScanner(false);
+      return;
+    }
+
+    // Ищем посылку
+    const found = parcels.find(p => p.track_number === track);
+    if (!found) {
+      alert(`❌ Посылка с треком ${track} не найдена`);
+      setShowScanner(false);
+      return;
+    }
+
+    if (found.status >= 5) {
+      alert(`✅ Посылка ${track} уже выдана`);
+      setShowScanner(false);
+      return;
+    }
+
+    // Переводим на следующий статус
+    try {
+      const nextStatus = found.status + 1;
+      const dates = [...(found.status_dates || [null, null, null, null, null, null])];
+      dates[nextStatus] = todayStr();
+      
+      const { error } = await db.from("parcels")
+        .update({ status: nextStatus, status_dates: dates })
+        .eq("id", found.id);
+        
+      if (error) throw error;
+      
+      const statusName = STATUSES[nextStatus].label;
+      // Уведомление с вибрацией на телефоне
+      if (navigator.vibrate) navigator.vibrate(200);
+      alert(`✅ ${track}\n→ ${statusName}\n📅 ${todayStr()}`);
+      
+      await load();
+      setSearchQuery(track);
+      
+    } catch(e) {
+      alert("❌ Ошибка: " + e.message);
+    }
+    
+    setShowScanner(false);
+  };
 
   const advance = async (p) => {
     if (p.status >= 5) return;
@@ -657,20 +713,6 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const togglePaid = async (p) => {
     await db.from("parcels").update({ paid: !p.paid }).eq("id", p.id);
     load();
-  };
-
-  const handleScan = (decoded) => {
-    let track = decoded.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-    if (track.length >= 6) {
-      // Находим посылку по треку и открываем её
-      const found = parcels.find(p => p.track_number === track);
-      if (found) {
-        setSearchQuery(track);
-      } else {
-        alert("Посылка с таким треком не найдена");
-      }
-    }
-    setShowScanner(false);
   };
 
   const inTransit = parcels.filter(p => p.status >= 1 && p.status <= 3).length;
@@ -725,6 +767,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                   onClick={() => setShowScanner(true)} 
                   className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-lg flex items-center justify-center text-lg"
                   style={{ background: C.stamp + "15", color: C.stamp }}
+                  title="Сканировать QR-код для изменения статуса"
                 >
                   📷
                 </button>
@@ -732,6 +775,11 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               <button onClick={load} className="px-4 rounded-xl text-sm font-bold" style={{ background: C.transit, color: "#fff" }}>
                 ↻
               </button>
+            </div>
+
+            {/* Подсказка для админа */}
+            <div className="text-xs mb-3 text-center" style={{ color: C.inkSoft, fontFamily: F.body }}>
+              📷 Сканируйте QR-код на посылке — статус автоматически изменится на следующий
             </div>
 
             {loading && (
