@@ -631,6 +631,12 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [searchQuery, setSearchQuery] = useState("");
   const rate = settings?.rate_per_kg || 0;
 
+  // ─── Админ-клиент ──────────────────────────────────────────────
+  const dbAdmin = supabase.createClient(
+    "https://efsftuvvdewxvtfgssco.supabase.co",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmc2Z0dXZ2ZGV3eHZ0Zmdzc2NvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDYyMDI2MiwiZXhwIjoyMTAwMTk2MjYyfQ.LXV_OuLCwH8IPvmBKwGznjuOYLuO5mpRomivR-0p1ek"
+  );
+
   const load = async () => {
     const { data: p } = await db.from("parcels").select("*, profiles(client_code, full_name)").order("created_at", { ascending: false });
     setParcels(p || []);
@@ -640,7 +646,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   };
   useEffect(() => { load(); }, []);
 
-  // ─── БЕЗОПАСНАЯ функция сброса пароля (без service_role) ──
+  // ─── Сброс пароля (ПРЯМАЯ ЗАПИСЬ) ──────────────────────────────
   const resetUserPassword = async (user) => {
     if (!confirm(`Сбросить пароль для ${user.full_name || user.phone}?`)) return;
     
@@ -656,24 +662,26 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     }
     
     try {
-      const email = user.phone ? phoneToEmail(user.phone) : user.email;
-      
-      const { error } = await db.auth.resetPasswordForEmail(email, {
-        redirectTo: window.location.origin + "/reset-password"
+      // ✅ ПРЯМОЕ ОБНОВЛЕНИЕ пароля через админ API
+      const { data, error } = await dbAdmin.auth.admin.updateUserById(user.id, {
+        password: newPassword
       });
       
       if (error) throw error;
       
-      alert(`✅ Ссылка для сброса пароля отправлена на ${email}\n\n` +
-            `Пользователь ${user.full_name || user.phone} получит инструкцию по смене пароля.`);
+      alert(`✅ Пароль для ${user.full_name || user.phone} успешно изменён!\n` +
+            `Новый пароль: ${newPassword}`);
+      
+      load();
       
     } catch(e) {
       console.error("Reset password error:", e);
       alert(`❌ Ошибка: ${e?.message || "Неизвестная ошибка"}\n\n` +
-            `Для ручного сброса:\n` +
+            `Попробуйте сбросить вручную через Supabase:\n` +
             `1. app.supabase.com → Authentication → Users\n` +
-            `2. Найдите пользователя: ${user.phone}\n` +
-            `3. Нажмите "Reset password" и скопируйте ссылку`);
+            `2. Найдите: ${user.phone}\n` +
+            `3. Нажмите "Reset password"\n` +
+            `4. Установите пароль: ${newPassword}`);
     }
   };
 
@@ -947,7 +955,6 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     </div>
   );
 }
-
 
  
 // ─── Настройки ──────────────────────────────────────────────────
