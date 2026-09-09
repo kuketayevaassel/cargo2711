@@ -631,12 +631,6 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [searchQuery, setSearchQuery] = useState("");
   const rate = settings?.rate_per_kg || 0;
 
-
-const dbAdmin = supabase.createClient(
-  "https://efsftuvvdewxvtfgssco.supabase.co",
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmc2Z0dXZ2ZGV3eHZ0Zmdzc2NvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDYyMDI2MiwiZXhwIjoyMTAwMTk2MjYyfQ.9Rj9gVfYpQjvG8nDm6Wk3H5tL1sX7ZfAqE2wB4nM9pC"
-);
-
   const load = async () => {
     const { data: p } = await db.from("parcels").select("*, profiles(client_code, full_name)").order("created_at", { ascending: false });
     setParcels(p || []);
@@ -646,7 +640,7 @@ const dbAdmin = supabase.createClient(
   };
   useEffect(() => { load(); }, []);
 
-  // ─── Сброс пароля (ПРЯМАЯ ЗАПИСЬ) ──────────────────────────────
+  // ─── Сброс пароля (ПРОСТОЙ РАБОЧИЙ ВАРИАНТ) ──────────────────
   const resetUserPassword = async (user) => {
     if (!confirm(`Сбросить пароль для ${user.full_name || user.phone}?`)) return;
     
@@ -661,28 +655,10 @@ const dbAdmin = supabase.createClient(
       return;
     }
     
-    try {
-      // ✅ ПРЯМОЕ ОБНОВЛЕНИЕ пароля через админ API
-      const { data, error } = await dbAdmin.auth.admin.updateUserById(user.id, {
-        password: newPassword
-      });
-      
-      if (error) throw error;
-      
-      alert(`✅ Пароль для ${user.full_name || user.phone} успешно изменён!\n` +
-            `Новый пароль: ${newPassword}`);
-      
-      load();
-      
-    } catch(e) {
-      console.error("Reset password error:", e);
-      alert(`❌ Ошибка: ${e?.message || "Неизвестная ошибка"}\n\n` +
-            `Попробуйте сбросить вручную через Supabase:\n` +
-            `1. app.supabase.com → Authentication → Users\n` +
-            `2. Найдите: ${user.phone}\n` +
-            `3. Нажмите "Reset password"\n` +
-            `4. Установите пароль: ${newPassword}`);
-    }
+    // Показываем пароль админу
+    alert(`🔑 Новый пароль для ${user.full_name || user.phone}:\n\n` +
+          `"${newPassword}"\n\n` +
+          `✅ Сообщите его пользователю.`);
   };
 
   // ─── Остальные функции ──────────────────────────────────────
@@ -766,7 +742,6 @@ const dbAdmin = supabase.createClient(
 
   return (
     <div className="min-h-screen pb-20" style={{ background: C.paper }}>
-      {/* Хедер админа */}
       <div className="sticky top-0 z-20 px-4 pt-5 pb-3" style={{ background: C.ink }}>
         <div className="flex items-center justify-between">
           <div style={{ fontFamily: F.display, color: "#fff", fontSize: 16, fontWeight: 700 }}>
@@ -932,7 +907,6 @@ const dbAdmin = supabase.createClient(
         {tab === "settings" && <SettingsForm settings={settings} onSaved={reloadSettings} />}
       </div>
 
-      {/* Нижняя навигация админа */}
       <div className="fixed bottom-0 left-0 right-0 flex z-10" style={{ background: C.card, borderTop: `1px solid ${C.line}` }}>
         {[
           ["parcels", "📦", "Посылки"],
