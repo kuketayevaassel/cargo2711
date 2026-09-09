@@ -635,7 +635,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   // ⚠️ Замените YOUR_SERVICE_ROLE_KEY на реальный ключ из Supabase
   const dbAdmin = supabase.createClient(
     "https://efsftuvvdewxvtfgssco.supabase.co",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmc2Z0dXZ2ZGV3eHZ0Zmdzc2NvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDYyMDI2MiwiZXhwIjoyMTAwMTk2MjYyfQ.ЗАМЕНИТЕ_НА_ВАШ_SERVICE_ROLE_KEY" // <- Нужно заменить!
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmc2Z0dXZ2ZGV3eHZ0Zmdzc2NvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDYyMDI2MiwiZXhwIjoyMTAwMTk2MjYyfQ.eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmc2Z0dXZ2ZGV3eHZ0Zmdzc2NvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDYyMDI2MiwiZXhwIjoyMTAwMTk2MjYyfQ.LXV_OuLCwH8IPvmBKwGznjuOYLuO5mpRomivR-0p1ek" // <- Нужно заменить!
   );
 
   const load = async () => {
