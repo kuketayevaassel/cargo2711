@@ -390,12 +390,9 @@ function ClientApp({ session, profile, settings, onLogout }) {
   };
 
   const handleScan = (decoded) => {
-    // Пытаемся извлечь трек-номер из QR (может быть URL или просто номер)
     let track = decoded;
-    // Если это URL, пытаемся взять последний сегмент
     const urlMatch = decoded.match(/\/([A-Z0-9]{8,})/i);
     if (urlMatch) track = urlMatch[1];
-    // Удаляем все лишнее, оставляем только буквы и цифры
     track = track.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
     if (track.length >= 6) {
       addTrack(track);
@@ -421,7 +418,6 @@ function ClientApp({ session, profile, settings, onLogout }) {
 
   return (
     <div className="min-h-screen pb-20" style={{ background: C.paper }}>
-      {/* Хедер */}
       <div className="sticky top-0 z-20 px-4 pt-5 pb-3" style={{ background: C.ink }}>
         <div className="flex items-center justify-between">
           <div style={{ fontFamily: F.display, color: "#fff", fontSize: 16, fontWeight: 700 }}>
@@ -594,7 +590,6 @@ function ClientApp({ session, profile, settings, onLogout }) {
         </div>
       )}
 
-      {/* Нижняя навигация */}
       {!selP && (
         <div className="fixed bottom-0 left-0 right-0 flex z-10" style={{ background: C.card, borderTop: `1px solid ${C.line}` }}>
           {[
@@ -615,7 +610,6 @@ function ClientApp({ session, profile, settings, onLogout }) {
         </div>
       )}
 
-      {/* Сканер */}
       {showScanner && <QRScanner onScan={handleScan} onClose={() => setShowScanner(false)} />}
     </div>
   );
@@ -631,11 +625,12 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [searchQuery, setSearchQuery] = useState("");
   const rate = settings?.rate_per_kg || 0;
 
-  // ─── Админ-клиент ──────────────────────────────────────────────
-const dbAdmin = supabase.createClient(
-  "https://efsftuvvdewxvtfgssco.supabase.co",
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmc2Z0dXZ2ZGV3eHZ0Zmdzc2NvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDYyMDI2MiwiZXhwIjoyMTAwMTk2MjYyfQ.9Rj9gVfYpQjvG8nDm6Wk3H5tL1sX7ZfAqE2wB4nM9pC"
-);
+  // ─── Админ-клиент с service_role (ВАШ КЛЮЧ!) ──────────────────
+  const dbAdmin = supabase.createClient(
+    "https://efsftuvvdewxvtfgssco.supabase.co",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmc2Z0dXZ2ZGV3eHZ0Zmdzc2NvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDYyMDI2MiwiZXhwIjoyMTAwMTk2MjYyfQ.LXV_OuLCwH8IPvmBKwGznjuOYLuO5mpRomivR-0p1ek"
+  );
+
   const load = async () => {
     const { data: p } = await db.from("parcels").select("*, profiles(client_code, full_name)").order("created_at", { ascending: false });
     setParcels(p || []);
@@ -645,7 +640,7 @@ const dbAdmin = supabase.createClient(
   };
   useEffect(() => { load(); }, []);
 
-  // ─── Сброс пароля ──────────────────────────────────────────────
+  // ─── СБРОС ПАРОЛЯ (БЕЗ ПИСЕМ И СМС!) ──────────────────────────
   const resetUserPassword = async (user) => {
     if (!confirm(`Сбросить пароль для ${user.full_name || user.phone}?`)) return;
     
@@ -945,7 +940,7 @@ const dbAdmin = supabase.createClient(
     </div>
   );
 }
- 
+
 // ─── Настройки ──────────────────────────────────────────────────
 function SettingsForm({ settings, onSaved }) {
   const [f, setF] = useState({ ...settings });
