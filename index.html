@@ -632,10 +632,9 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const rate = settings?.rate_per_kg || 0;
 
   // ─── Админ-клиент ──────────────────────────────────────────────
-  const dbAdmin = supabase.createClient(
-    "https://efsftuvvdewxvtfgssco.supabase.co",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmc2Z0dXZ2ZGV3eHZ0Zmdzc2NvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDYyMDI2MiwiZXhwIjoyMTAwMTk2MjYyfQ.9Rj9gVfYpQjvG8nDm6Wk3H5tL1sX7ZfAqE2wB4nM9pC"
-  );
+const dbAdmin = supabase.createClient(
+  "https://efsftuvvdewxvtfgssco.supabase.co",
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmc2Z0dXZ2ZGV3eHZ0Zmdzc2NvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDYyMDI2MiwiZXhwIjoyMTAwMTk2MjYyfQ.9Rj9gVfYpQjvG8nDm6Wk3H5tL1sX7ZfAqE2wB4nM9pC"
 
   const load = async () => {
     const { data: p } = await db.from("parcels").select("*, profiles(client_code, full_name)").order("created_at", { ascending: false });
