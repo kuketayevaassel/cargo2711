@@ -629,8 +629,14 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [showScanner, setShowScanner] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [scanMode, setScanMode] = useState("status"); // "status" или "add"
   const rate = settings?.rate_per_kg || 0;
+
+  // ─── Создаем админ-клиент ──────────────────────────────────
+  // ⚠️ Замените YOUR_SERVICE_ROLE_KEY на реальный ключ из Supabase
+  const dbAdmin = supabase.createClient(
+    "https://efsftuvvdewxvtfgssco.supabase.co",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmc2Z0dXZ2ZGV3eHZ0Zmdzc2NvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDYyMDI2MiwiZXhwIjoyMTAwMTk2MjYyfQ.ЗАМЕНИТЕ_НА_ВАШ_SERVICE_ROLE_KEY" // <- Нужно заменить!
+  );
 
   const load = async () => {
     const { data: p } = await db.from("parcels").select("*, profiles(client_code, full_name)").order("created_at", { ascending: false });
@@ -641,61 +647,42 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   };
   useEffect(() => { load(); }, []);
 
-  // --- Функция для сканирования админом ---
-  const handleScan = async (decoded) => {
-    // Извлекаем трек-номер
-    let track = decoded;
-    const urlMatch = decoded.match(/\/([A-Z0-9]{8,})/i);
-    if (urlMatch) track = urlMatch[1];
-    track = track.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  // ─── Функция сброса пароля ─────────────────────────────────
+  const resetUserPassword = async (user) => {
+    if (!confirm(`Сбросить пароль для ${user.full_name || user.phone}?`)) return;
     
-    if (track.length < 6) {
-      alert("❌ Не удалось распознать трек-номер");
-      setShowScanner(false);
+    const newPassword = prompt(
+      `Введите новый пароль для ${user.full_name || user.phone}\n` +
+      `(минимум 6 символов):`
+    );
+    
+    if (!newPassword) return;
+    if (newPassword.length < 6) {
+      alert("❌ Пароль должен быть минимум 6 символов");
       return;
     }
-
-    // Ищем посылку
-    const found = parcels.find(p => p.track_number === track);
-    if (!found) {
-      alert(`❌ Посылка с треком ${track} не найдена`);
-      setShowScanner(false);
-      return;
-    }
-
-    if (found.status >= 5) {
-      alert(`✅ Посылка ${track} уже выдана`);
-      setShowScanner(false);
-      return;
-    }
-
-    // Переводим на следующий статус
+    
     try {
-      const nextStatus = found.status + 1;
-      const dates = [...(found.status_dates || [null, null, null, null, null, null])];
-      dates[nextStatus] = todayStr();
+      // Используем dbAdmin для смены пароля
+      const { error } = await dbAdmin.auth.admin.updateUserById(user.id, {
+        password: newPassword
+      });
       
-      const { error } = await db.from("parcels")
-        .update({ status: nextStatus, status_dates: dates })
-        .eq("id", found.id);
-        
       if (error) throw error;
-      
-      const statusName = STATUSES[nextStatus].label;
-      // Уведомление с вибрацией на телефоне
-      if (navigator.vibrate) navigator.vibrate(200);
-      alert(`✅ ${track}\n→ ${statusName}\n📅 ${todayStr()}`);
-      
-      await load();
-      setSearchQuery(track);
+      alert(`✅ Пароль для ${user.full_name || user.phone} успешно изменён!`);
+      load(); // Обновляем список
       
     } catch(e) {
-      alert("❌ Ошибка: " + e.message);
+      console.error("Reset password error:", e);
+      let msg = e?.message || "Не удалось сменить пароль";
+      if (msg.includes("permission") || msg.includes("Policy")) {
+        msg = "❌ Ошибка прав доступа. Проверьте service_role ключ в настройках.";
+      }
+      alert(msg);
     }
-    
-    setShowScanner(false);
   };
 
+  // ─── Остальные функции ──────────────────────────────────────
   const advance = async (p) => {
     if (p.status >= 5) return;
     const dates = [...(p.status_dates || [null, null, null, null, null, null])];
@@ -713,6 +700,57 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const togglePaid = async (p) => {
     await db.from("parcels").update({ paid: !p.paid }).eq("id", p.id);
     load();
+  };
+
+  // ─── Сканер для админа ──────────────────────────────────────
+  const handleScan = async (decoded) => {
+    let track = decoded;
+    const urlMatch = decoded.match(/\/([A-Z0-9]{8,})/i);
+    if (urlMatch) track = urlMatch[1];
+    track = track.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    
+    if (track.length < 6) {
+      alert("❌ Не удалось распознать трек-номер");
+      setShowScanner(false);
+      return;
+    }
+
+    const found = parcels.find(p => p.track_number === track);
+    if (!found) {
+      alert(`❌ Посылка с треком ${track} не найдена`);
+      setShowScanner(false);
+      return;
+    }
+
+    if (found.status >= 5) {
+      alert(`✅ Посылка ${track} уже выдана`);
+      setShowScanner(false);
+      return;
+    }
+
+    try {
+      const nextStatus = found.status + 1;
+      const dates = [...(found.status_dates || [null, null, null, null, null, null])];
+      dates[nextStatus] = todayStr();
+      
+      const { error } = await db.from("parcels")
+        .update({ status: nextStatus, status_dates: dates })
+        .eq("id", found.id);
+        
+      if (error) throw error;
+      
+      const statusName = STATUSES[nextStatus].label;
+      if (navigator.vibrate) navigator.vibrate(200);
+      alert(`✅ ${track}\n→ ${statusName}\n📅 ${todayStr()}`);
+      
+      await load();
+      setSearchQuery(track);
+      
+    } catch(e) {
+      alert("❌ Ошибка: " + e.message);
+    }
+    
+    setShowScanner(false);
   };
 
   const inTransit = parcels.filter(p => p.status >= 1 && p.status <= 3).length;
@@ -777,7 +815,6 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               </button>
             </div>
 
-            {/* Подсказка для админа */}
             <div className="text-xs mb-3 text-center" style={{ color: C.inkSoft, fontFamily: F.body }}>
               📷 Сканируйте QR-код на посылке — статус автоматически изменится на следующий
             </div>
@@ -846,15 +883,45 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
         {tab === "clients" && (
           <>
             {loading && <div className="text-sm text-center py-8" style={{ color: C.inkSoft, fontFamily: F.body }}>Загрузка…</div>}
-            {!loading && clients.length === 0 && <div className="text-sm text-center py-8" style={{ color: C.inkSoft, fontFamily: F.body }}>Пока нет клиентов.</div>}
+            {!loading && clients.length === 0 && (
+              <div className="text-sm text-center py-8" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                Пока нет клиентов.
+              </div>
+            )}
             {clients.map(c => (
-              <div key={c.id} className="rounded-xl p-4 mb-3 flex items-center justify-between slide-up" 
+              <div key={c.id} className="rounded-xl p-4 mb-3 slide-up" 
                 style={{ background: C.card, border: `1px solid ${C.line}` }}>
-                <div>
-                  <div className="text-sm font-bold" style={{ color: C.ink, fontFamily: F.body }}>{c.full_name || "—"}</div>
-                  <div className="text-xs" style={{ color: C.inkSoft, fontFamily: F.body }}>{c.phone}</div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-bold" style={{ color: C.ink, fontFamily: F.body }}>
+                      {c.full_name || "—"}
+                    </div>
+                    <div className="text-xs" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                      {c.phone || "Нет телефона"}
+                    </div>
+                    <div className="text-xs mt-1" style={{ color: C.inkSoft, fontFamily: F.mono }}>
+                      Код: {c.client_code}
+                    </div>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <div style={{ fontFamily: F.mono, fontSize: 14, color: C.transit, fontWeight: 600 }}>
+                      {c.client_code}
+                    </div>
+                    <button 
+                      onClick={() => resetUserPassword(c)} 
+                      className="text-xs font-bold px-3 py-1.5 rounded-lg transition-all active:scale-95"
+                      style={{ 
+                        background: C.stamp + "22", 
+                        color: C.stamp,
+                        fontFamily: F.body,
+                        border: `1px solid ${C.stamp}33`
+                      }}
+                      title="Сбросить пароль пользователя"
+                    >
+                      🔑 Сброс пароля
+                    </button>
+                  </div>
                 </div>
-                <div style={{ fontFamily: F.mono, fontSize: 14, color: C.transit, fontWeight: 600 }}>{c.client_code}</div>
               </div>
             ))}
           </>
