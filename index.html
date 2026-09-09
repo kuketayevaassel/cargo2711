@@ -97,12 +97,21 @@ const todayStr = () => {
 const priceKZT = (w, rate) => Math.round((w||0) * (rate||0));
 const shortTrack = t => t && t.length > 8 ? t.slice(0, 4) + "…" + t.slice(-4) : t;
 
+// Извлечь трек-номер из результата сканирования (общая функция)
+function extractTrack(decoded) {
+  let track = decoded;
+  const urlMatch = decoded.match(/\/([A-Z0-9]{8,})/i);
+  if (urlMatch) track = urlMatch[1];
+  return track.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+}
+
 // ─── Компонент сканера QR ──────────────────────────────────────
 function QRScanner({ onScan, onClose }) {
   const [error, setError] = useState(null);
   const [scanning, setScanning] = useState(false);
   const scannerRef = useRef(null);
   const containerRef = useRef(null);
+  const firedRef = useRef(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -119,13 +128,14 @@ function QRScanner({ onScan, onClose }) {
       { facingMode: "environment" },
       config,
       (decodedText) => {
-        if (onScan) onScan(decodedText);
-        html5QrCode.stop();
+        // защита от многократного срабатывания на один и тот же кадр
+        if (firedRef.current) return;
+        firedRef.current = true;
         setScanning(false);
+        html5QrCode.stop().catch(() => {});
+        if (onScan) onScan(decodedText);
       },
-      (errorMessage) => {
-        // silent
-      }
+      () => { /* silent: кадры без QR — это нормально */ }
     ).then(() => setScanning(true))
     .catch(err => {
       console.error("QR error:", err);
@@ -133,9 +143,10 @@ function QRScanner({ onScan, onClose }) {
     });
 
     return () => {
-      if (scannerRef.current) {
-        scannerRef.current.stop().catch(() => {});
-        scannerRef.current.clear();
+      const s = scannerRef.current;
+      if (s) {
+        // clear() нельзя вызывать, пока камера работает — сначала stop()
+        s.stop().then(() => s.clear()).catch(() => { try { s.clear(); } catch(_) {} });
       }
     };
   }, []);
@@ -148,7 +159,7 @@ function QRScanner({ onScan, onClose }) {
         </div>
         <div className="p-4 text-center">
           <div className="text-sm font-semibold text-white" style={{ fontFamily: F.body }}>Наведите камеру на QR-код трека</div>
-          <div className="text-xs mt-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Сканируйте накладную или экран продавца</div>
+          <div className="text-xs mt-1" style={{ color: "#9AA6B5", fontFamily: F.body }}>Сканируйте накладную или экран продавца</div>
         </div>
         <div id="qr-reader" ref={containerRef} className="w-full" style={{ minHeight: 320, background: "#0a111a" }}></div>
         {error && (
@@ -159,12 +170,12 @@ function QRScanner({ onScan, onClose }) {
         )}
         {scanning && (
           <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-            <div className="w-72 h-72 border-2 border-white/30 rounded-2xl scan-overlay" 
+            <div className="w-72 h-72 border-2 rounded-2xl scan-overlay"
               style={{ borderColor: C.stamp + "66" }}></div>
           </div>
         )}
         <div className="p-4 text-center border-t" style={{ borderColor: C.line + "33" }}>
-          <button onClick={onClose} className="text-xs font-medium" style={{ color: C.inkSoft, fontFamily: F.body }}>
+          <button onClick={onClose} className="text-xs font-medium" style={{ color: "#9AA6B5", fontFamily: F.body }}>
             ✕ Закрыть сканер
           </button>
         </div>
@@ -190,12 +201,17 @@ function Auth() {
       if (mode === "register") {
         if (phone.replace(/\D/g,"").length < 10) throw new Error("Введите телефон полностью");
         if (pass.length < 6) throw new Error("Пароль минимум 6 символов");
-        const { error } = await db.auth.signUp({ 
-          email, 
+        const { data, error } = await db.auth.signUp({
+          email,
           password: pass,
-          options: { data: { full_name: name, phone } } 
+          options: { data: { full_name: name, phone } }
         });
         if (error) throw error;
+        // Если в Supabase включено «Confirm email» — сессии не будет,
+        // а письмо на фиктивный адрес никогда не придёт.
+        if (data?.user && !data?.session) {
+          throw new Error("В Supabase включено подтверждение email. Отключите его: Authentication → Providers → Email → выключить «Confirm email».");
+        }
       } else {
         const { error } = await db.auth.signInWithPassword({ email, password: pass });
         if (error) throw error;
@@ -206,6 +222,7 @@ function Auth() {
       if (!m || m === "{}" || m === "[object Object]") m = "Ошибка соединения. Проверьте интернет и попробуйте снова.";
       if (m === "Invalid login credentials") m = "Неверный телефон или пароль";
       if (m === "User already registered") m = "Этот телефон уже зарегистрирован — войдите";
+      if (m === "Email not confirmed") m = "Аккаунт не подтверждён. Отключите «Confirm email» в настройках Supabase и подтвердите пользователя вручную.";
       setErr(m);
     }
     setBusy(false);
@@ -227,7 +244,7 @@ function Auth() {
             <div className="mb-3">
               <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Имя</label>
               <input value={name} onChange={e => setName(e.target.value)} placeholder="Ваше имя"
-                className="w-full rounded-xl px-4 py-3 outline-none transition-all focus:ring-2"
+                className="w-full rounded-xl px-4 py-3 outline-none transition-all"
                 style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, fontSize: 15, color: C.ink }}
                 onFocus={e => e.target.style.borderColor = C.stamp}
                 onBlur={e => e.target.style.borderColor = C.line} />
@@ -235,17 +252,17 @@ function Auth() {
           )}
           <div className="mb-3">
             <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Телефон</label>
-            <input value={phone} onChange={e => setPhone(formatPhone(e.target.value))} onFocus={e => { if (!phone) setPhone("+7 (") }}
+            <input value={phone} onChange={e => setPhone(formatPhone(e.target.value))}
               inputMode="numeric" placeholder="+7 (___) ___-__-__"
-              className="w-full rounded-xl px-4 py-3 outline-none transition-all focus:ring-2"
+              className="w-full rounded-xl px-4 py-3 outline-none transition-all"
               style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, fontSize: 15, color: C.ink }}
-              onFocus={e => e.target.style.borderColor = C.stamp}
+              onFocus={e => { e.target.style.borderColor = C.stamp; if (!phone) setPhone("+7 ("); }}
               onBlur={e => e.target.style.borderColor = C.line} />
           </div>
           <div className="mb-4">
             <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Пароль</label>
             <input type="password" value={pass} onChange={e => setPass(e.target.value)} placeholder="••••••••"
-              className="w-full rounded-xl px-4 py-3 outline-none transition-all focus:ring-2"
+              className="w-full rounded-xl px-4 py-3 outline-none transition-all"
               style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, fontSize: 15, color: C.ink }}
               onFocus={e => e.target.style.borderColor = C.stamp}
               onBlur={e => e.target.style.borderColor = C.line} />
@@ -272,7 +289,7 @@ function Auth() {
 function Waybill({ parcel, rate, onBack }) {
   const delivered = parcel.status === 5;
   const dates = parcel.status_dates || [];
-  
+
   return (
     <div className="px-4 pt-4 pb-28 slide-up">
       <button onClick={onBack} className="flex items-center gap-2 text-sm font-semibold mb-4" style={{ color: C.transit, fontFamily: F.body }}>
@@ -288,9 +305,9 @@ function Waybill({ parcel, rate, onBack }) {
         <div className="text-xs uppercase tracking-wider mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Трек-номер</div>
         <div style={{ fontFamily: F.mono, fontSize: 20, fontWeight: 600, color: C.ink, letterSpacing: 1 }}>{parcel.track_number}</div>
         {parcel.title && <div className="mt-1 text-sm" style={{ color: C.inkSoft, fontFamily: F.body }}>{parcel.title}</div>}
-        
+
         <div className="mt-4" style={{ borderTop: `2px dashed ${C.line}` }}></div>
-        
+
         <div className="mt-4 space-y-0">
           {STATUSES.map((s, i) => {
             const passed = i <= parcel.status;
@@ -298,19 +315,19 @@ function Waybill({ parcel, rate, onBack }) {
             return (
               <div key={i} className="flex items-start gap-3 py-3 relative">
                 {i < STATUSES.length - 1 && (
-                  <div className="absolute left-[6px] top-[32px] w-[2px] h-[calc(100%-12px)]" 
+                  <div className="absolute left-[6px] top-[32px] w-[2px] h-[calc(100%-12px)]"
                     style={{ background: passed ? s.color : C.line }}></div>
                 )}
                 <div className="relative z-10 mt-0.5 rounded-full flex-shrink-0 transition-all duration-500"
-                  style={{ 
-                    width: isActive ? 18 : 14, 
+                  style={{
+                    width: isActive ? 18 : 14,
                     height: isActive ? 18 : 14,
                     background: passed ? s.color : "transparent",
                     border: `2.5px solid ${passed ? s.color : C.line}`,
                     boxShadow: isActive ? `0 0 0 4px ${s.color}22` : "none"
                   }}>
                   {isActive && (
-                    <div className="absolute -inset-1 rounded-full animate-pulse" 
+                    <div className="absolute -inset-1 rounded-full animate-pulse"
                       style={{ background: s.color + "33" }}></div>
                   )}
                 </div>
@@ -329,7 +346,7 @@ function Waybill({ parcel, rate, onBack }) {
             );
           })}
         </div>
-        
+
         {parcel.weight > 0 && (
           <>
             <div style={{ borderTop: `2px dashed ${C.line}` }} className="my-4"></div>
@@ -368,6 +385,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
   const [showScanner, setShowScanner] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [copied, setCopied] = useState(false);
+  const [calcWeight, setCalcWeight] = useState("");
   const rate = settings?.rate_per_kg || 0;
 
   const load = async () => {
@@ -379,21 +397,18 @@ function ClientApp({ session, profile, settings, onLogout }) {
 
   const addTrack = async (trackNumber) => {
     const t = (trackNumber || newTrack).trim().toUpperCase();
-    if (t.length < 6) return;
+    if (t.length < 6) { alert("Трек-номер слишком короткий (минимум 6 символов)"); return; }
     const exists = parcels.some(p => p.track_number === t);
     if (exists) { alert("Этот трек-номер уже добавлен"); return; }
     const { error } = await db.from("parcels").insert({ client_id: session.user.id, track_number: t });
-    if (error) { alert(error.message); return; }
+    if (error) { alert("Не удалось добавить: " + error.message); return; }
     setNewTrack("");
     setShowScanner(false);
     load();
   };
 
   const handleScan = (decoded) => {
-    let track = decoded;
-    const urlMatch = decoded.match(/\/([A-Z0-9]{8,})/i);
-    if (urlMatch) track = urlMatch[1];
-    track = track.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    const track = extractTrack(decoded);
     if (track.length >= 6) {
       addTrack(track);
     } else {
@@ -404,7 +419,17 @@ function ClientApp({ session, profile, settings, onLogout }) {
 
   const copyAddr = () => {
     const txt = `${settings.china_recipient} (${profile.client_code})\n${settings.china_phone}\n${settings.china_region}\n${settings.china_street} (${profile.client_code})`;
-    navigator.clipboard?.writeText(txt);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt);
+    } else {
+      // запасной вариант для старых браузеров / http
+      const ta = document.createElement("textarea");
+      ta.value = txt;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -449,16 +474,16 @@ function ClientApp({ session, profile, settings, onLogout }) {
             <>
               <div className="flex gap-2 mb-4">
                 <div className="flex-1 relative">
-                  <input 
-                    value={newTrack} 
-                    onChange={e => setNewTrack(e.target.value.toUpperCase())} 
-                    placeholder="Вставьте трек-номер" 
+                  <input
+                    value={newTrack}
+                    onChange={e => setNewTrack(e.target.value.toUpperCase())}
+                    placeholder="Вставьте трек-номер"
                     className="w-full rounded-xl px-4 py-3 pr-12 outline-none"
                     style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, fontSize: 14, background: C.card, color: C.ink }}
                     onKeyDown={e => e.key === "Enter" && addTrack()}
                   />
-                  <button 
-                    onClick={() => setShowScanner(true)} 
+                  <button
+                    onClick={() => setShowScanner(true)}
                     className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-lg flex items-center justify-center text-lg"
                     style={{ background: C.stamp + "15", color: C.stamp }}
                     title="Сканировать QR-код"
@@ -466,8 +491,8 @@ function ClientApp({ session, profile, settings, onLogout }) {
                     📷
                   </button>
                 </div>
-                <button 
-                  onClick={() => addTrack()} 
+                <button
+                  onClick={() => addTrack()}
                   className="px-5 rounded-xl font-bold text-white text-xl transition-all active:scale-95"
                   style={{ background: C.ink }}
                 >
@@ -476,10 +501,10 @@ function ClientApp({ session, profile, settings, onLogout }) {
               </div>
 
               <div className="mb-4">
-                <input 
-                  value={searchQuery} 
-                  onChange={e => setSearchQuery(e.target.value)} 
-                  placeholder="🔍 Поиск по треку…" 
+                <input
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  placeholder="🔍 Поиск по треку…"
                   className="w-full rounded-xl px-4 py-2.5 outline-none text-sm"
                   style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, background: C.card, color: C.ink }}
                 />
@@ -502,12 +527,11 @@ function ClientApp({ session, profile, settings, onLogout }) {
               )}
 
               {filteredParcels.map((p, idx) => (
-                <button 
-                  key={p.id} 
-                  onClick={() => setSel(p.id)} 
+                <button
+                  key={p.id}
+                  onClick={() => setSel(p.id)}
                   className="w-full text-left rounded-xl p-4 mb-3 card-hover slide-up"
-                  style={{ background: C.card, border: `1px solid ${C.line}` }}
-                  style={{ animationDelay: `${idx * 30}ms` }}
+                  style={{ background: C.card, border: `1px solid ${C.line}`, animationDelay: `${idx * 30}ms` }}
                 >
                   <div className="flex items-center justify-between mb-2">
                     <span style={{ fontFamily: F.mono, fontSize: 14, fontWeight: 600, color: C.ink }}>
@@ -561,16 +585,13 @@ function ClientApp({ session, profile, settings, onLogout }) {
             <div className="rounded-2xl p-5 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
               <div className="text-sm font-bold mb-3" style={{ color: C.ink, fontFamily: F.body }}>🧮 Калькулятор доставки</div>
               <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Вес, кг</label>
-              <input 
-                type="number" 
-                min="0" 
-                step="0.1" 
+              <input
+                type="number"
+                min="0"
+                step="0.1"
                 placeholder="0.0"
-                onChange={e => {
-                  const val = e.target.value;
-                  const weight = parseFloat(val) || 0;
-                  document.getElementById("calc-result").textContent = priceKZT(weight, rate).toLocaleString("ru-RU") + " ₸";
-                }}
+                value={calcWeight}
+                onChange={e => setCalcWeight(e.target.value)}
                 className="w-full rounded-xl px-4 py-3 outline-none text-lg"
                 style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }}
               />
@@ -581,8 +602,8 @@ function ClientApp({ session, profile, settings, onLogout }) {
               </div>
               <div className="flex justify-between items-baseline mt-1" style={{ fontFamily: F.body }}>
                 <span className="text-sm" style={{ color: C.inkSoft }}>Итого</span>
-                <span id="calc-result" style={{ fontFamily: F.mono, fontSize: 28, fontWeight: 700, color: C.stamp }}>
-                  0 ₸
+                <span style={{ fontFamily: F.mono, fontSize: 28, fontWeight: 700, color: C.stamp }}>
+                  {priceKZT(parseFloat(calcWeight) || 0, rate).toLocaleString("ru-RU")} ₸
                 </span>
               </div>
             </div>
@@ -598,8 +619,8 @@ function ClientApp({ session, profile, settings, onLogout }) {
             ["calc", "🧮", "Калькулятор"]
           ].map(([id, icon, label]) => (
             <button key={id} onClick={() => setTab(id)} className="flex-1 py-3 text-center transition-all"
-              style={{ 
-                color: tab === id ? C.stamp : C.inkSoft, 
+              style={{
+                color: tab === id ? C.stamp : C.inkSoft,
                 fontFamily: F.body,
                 borderTop: tab === id ? `3px solid ${C.stamp}` : "3px solid transparent"
               }}>
@@ -634,35 +655,44 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   };
   useEffect(() => { load(); }, []);
 
-  // ─── СБРОС ПАРОЛЯ (через Edge Function) ──────────────────────────
+  // ─── СБРОС ПАРОЛЯ: админ вводит новый пароль сам, БЕЗ писем и СМС ──
   const resetUserPassword = async (user) => {
-    if (!confirm(`Сбросить пароль для ${user.full_name || user.phone}?`)) return;
-    
+    if (!confirm(`Сменить пароль для ${user.full_name || user.phone}?`)) return;
+
     const newPassword = prompt(
       `Введите новый пароль для ${user.full_name || user.phone}\n` +
       `(минимум 6 символов):`
     );
-    
+
     if (!newPassword) return;
     if (newPassword.length < 6) {
       alert("❌ Пароль должен быть минимум 6 символов");
       return;
     }
-    
+
     try {
       const { data, error } = await db.functions.invoke('reset-password', {
         body: { user_id: user.id, new_password: newPassword }
       });
-      
-      if (error) throw error;
-      
+
+      if (error) {
+        // вытаскиваем реальный текст ошибки из ответа Edge Function
+        let msg = error.message || "Неизвестная ошибка";
+        try {
+          const body = await error.context?.json?.();
+          if (body?.error) msg = body.error;
+        } catch(_) {}
+        throw new Error(msg);
+      }
+      if (data?.error) throw new Error(data.error);
+
       alert(`✅ Пароль для ${user.full_name || user.phone} изменён!\n\n` +
             `🔑 Новый пароль: ${newPassword}\n\n` +
-            `Сообщите его пользователю.`);
-      
+            `Сообщите его пользователю лично.`);
+
     } catch(e) {
       console.error("Reset error:", e);
-      alert(`❌ Ошибка: ${e.message || "Неизвестная ошибка"}`);
+      alert(`❌ Ошибка: ${e.message || "Неизвестная ошибка"}\n\nПроверьте, что Edge Function «reset-password» развёрнута в Supabase.`);
     }
   };
 
@@ -687,11 +717,8 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   };
 
   const handleScan = async (decoded) => {
-    let track = decoded;
-    const urlMatch = decoded.match(/\/([A-Z0-9]{8,})/i);
-    if (urlMatch) track = urlMatch[1];
-    track = track.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
-    
+    const track = extractTrack(decoded);
+
     if (track.length < 6) {
       alert("❌ Не удалось распознать трек-номер");
       setShowScanner(false);
@@ -715,24 +742,24 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
       const nextStatus = found.status + 1;
       const dates = [...(found.status_dates || [null, null, null, null, null, null])];
       dates[nextStatus] = todayStr();
-      
+
       const { error } = await db.from("parcels")
         .update({ status: nextStatus, status_dates: dates })
         .eq("id", found.id);
-        
+
       if (error) throw error;
-      
+
       const statusName = STATUSES[nextStatus].label;
       if (navigator.vibrate) navigator.vibrate(200);
       alert(`✅ ${track}\n→ ${statusName}\n📅 ${todayStr()}`);
-      
+
       await load();
       setSearchQuery(track);
-      
+
     } catch(e) {
       alert("❌ Ошибка: " + e.message);
     }
-    
+
     setShowScanner(false);
   };
 
@@ -750,7 +777,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
       <div className="sticky top-0 z-20 px-4 pt-5 pb-3" style={{ background: C.ink }}>
         <div className="flex items-center justify-between">
           <div style={{ fontFamily: F.display, color: "#fff", fontSize: 16, fontWeight: 700 }}>
-            cargo<span style={{ color: C.stamp }}>_</span>2711 
+            cargo<span style={{ color: C.stamp }}>_</span>2711
             <span className="ml-2 text-xs font-normal" style={{ color: C.gold, fontFamily: F.body }}>· админ</span>
           </div>
           <button onClick={onLogout} className="text-xs px-3 py-1.5 rounded-lg" style={{ color: "#9AA6B5", fontFamily: F.body, background: "rgba(255,255,255,0.06)" }}>
@@ -776,15 +803,15 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
           <>
             <div className="flex gap-2 mb-4">
               <div className="flex-1 relative">
-                <input 
-                  value={searchQuery} 
-                  onChange={e => setSearchQuery(e.target.value)} 
-                  placeholder="🔍 Поиск по треку или коду клиента" 
+                <input
+                  value={searchQuery}
+                  onChange={e => setSearchQuery(e.target.value)}
+                  placeholder="🔍 Поиск по треку или коду клиента"
                   className="w-full rounded-xl px-4 py-3 pr-12 outline-none text-sm"
                   style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, background: C.card, color: C.ink }}
                 />
-                <button 
-                  onClick={() => setShowScanner(true)} 
+                <button
+                  onClick={() => setShowScanner(true)}
                   className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-lg flex items-center justify-center text-lg"
                   style={{ background: C.stamp + "15", color: C.stamp }}
                   title="Сканировать QR-код для изменения статуса"
@@ -816,13 +843,13 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
             )}
 
             {filteredParcels.map((p, idx) => (
-              <div key={p.id} className="rounded-xl p-4 mb-3 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}
-                style={{ animationDelay: `${idx * 20}ms` }}>
+              <div key={p.id} className="rounded-xl p-4 mb-3 slide-up"
+                style={{ background: C.card, border: `1px solid ${C.line}`, animationDelay: `${idx * 20}ms` }}>
                 <div className="flex items-center justify-between mb-1">
                   <span style={{ fontFamily: F.mono, fontSize: 13, fontWeight: 600, color: C.ink }}>
                     {p.track_number}
                   </span>
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded" 
+                  <span className="text-xs font-semibold px-2 py-0.5 rounded"
                     style={{ background: C.transit + "15", color: C.transit, fontFamily: F.mono }}>
                     {p.profiles?.client_code || "—"}
                   </span>
@@ -837,7 +864,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                 <div className="flex items-center gap-2 mb-2 flex-wrap">
                   <input type="number" min="0" step="0.1" defaultValue={p.weight || ""} placeholder="вес"
                     onBlur={e => e.target.value !== String(p.weight) && setWeight(p, e.target.value)}
-                    className="w-20 rounded-lg px-2 py-1.5 outline-none text-sm" 
+                    className="w-20 rounded-lg px-2 py-1.5 outline-none text-sm"
                     style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
                   {p.weight > 0 && (
                     <span className="text-xs font-bold" style={{ color: C.ink, fontFamily: F.mono }}>
@@ -871,7 +898,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               </div>
             )}
             {clients.map(c => (
-              <div key={c.id} className="rounded-xl p-4 mb-3 slide-up" 
+              <div key={c.id} className="rounded-xl p-4 mb-3 slide-up"
                 style={{ background: C.card, border: `1px solid ${C.line}` }}>
                 <div className="flex items-center justify-between">
                   <div>
@@ -886,21 +913,18 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-1">
-                    <div style={{ fontFamily: F.mono, fontSize: 14, color: C.transit, fontWeight: 600 }}>
-                      {c.client_code}
-                    </div>
-                    <button 
-                      onClick={() => resetUserPassword(c)} 
+                    <button
+                      onClick={() => resetUserPassword(c)}
                       className="text-xs font-bold px-3 py-1.5 rounded-lg transition-all active:scale-95"
-                      style={{ 
-                        background: C.stamp + "22", 
+                      style={{
+                        background: C.stamp + "22",
                         color: C.stamp,
                         fontFamily: F.body,
                         border: `1px solid ${C.stamp}33`
                       }}
-                      title="Сбросить пароль пользователя"
+                      title="Задать новый пароль пользователю"
                     >
-                      🔑 Сброс пароля
+                      🔑 Сменить пароль
                     </button>
                   </div>
                 </div>
@@ -919,8 +943,8 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
           ["settings", "⚙️", "Настройки"]
         ].map(([id, icon, label]) => (
           <button key={id} onClick={() => setTab(id)} className="flex-1 py-3 text-center"
-            style={{ 
-              color: tab === id ? C.stamp : C.inkSoft, 
+            style={{
+              color: tab === id ? C.stamp : C.inkSoft,
               fontFamily: F.body,
               borderTop: tab === id ? `3px solid ${C.stamp}` : "3px solid transparent"
             }}>
@@ -934,14 +958,26 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     </div>
   );
 }
- 
+
+// ─── Поле настроек (ВНЕ SettingsForm — иначе инпут теряет фокус при каждом символе) ───
+function SettingsField({ label, value, onChange, type }) {
+  return (
+    <div className="mb-3">
+      <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>{label}</label>
+      <input type={type || "text"} value={value || ""} onChange={e => onChange(e.target.value)}
+        className="w-full rounded-xl px-4 py-2.5 outline-none"
+        style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, fontSize: 14, color: C.ink }} />
+    </div>
+  );
+}
+
 // ─── Настройки ──────────────────────────────────────────────────
 function SettingsForm({ settings, onSaved }) {
   const [f, setF] = useState({ ...settings });
   const [busy, setBusy] = useState(false);
   const [ok, setOk] = useState(false);
   const upd = (k, v) => setF(s => ({ ...s, [k]: v }));
-  
+
   const save = async () => {
     setBusy(true);
     setOk(false);
@@ -958,26 +994,17 @@ function SettingsForm({ settings, onSaved }) {
     else { setOk(true); if (onSaved) onSaved(); setTimeout(() => setOk(false), 1500); }
   };
 
-  const Field = ({ label, k, type }) => (
-    <div className="mb-3">
-      <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>{label}</label>
-      <input type={type || "text"} value={f[k] || ""} onChange={e => upd(k, e.target.value)}
-        className="w-full rounded-xl px-4 py-2.5 outline-none"
-        style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, fontSize: 14, color: C.ink }} />
-    </div>
-  );
-
   return (
     <div className="rounded-2xl p-5 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
       <div className="text-sm font-bold mb-4" style={{ color: C.ink, fontFamily: F.body }}>⚙️ Настройки карго</div>
-      <Field label="Тариф, ₸ за кг" k="rate_per_kg" type="number" />
-      <Field label="Префикс кодов клиентов" k="code_prefix" />
+      <SettingsField label="Тариф, ₸ за кг" value={f.rate_per_kg} onChange={v => upd("rate_per_kg", v)} type="number" />
+      <SettingsField label="Префикс кодов клиентов" value={f.code_prefix} onChange={v => upd("code_prefix", v)} />
       <div className="my-4" style={{ borderTop: `2px dashed ${C.line}` }}></div>
       <div className="text-xs font-bold mb-2" style={{ color: C.inkSoft, fontFamily: F.body }}>📍 Адрес склада в Китае</div>
-      <Field label="收货人 Получатель" k="china_recipient" />
-      <Field label="电话 Телефон" k="china_phone" />
-      <Field label="地区 Регион" k="china_region" />
-      <Field label="详细地址 Адрес" k="china_street" />
+      <SettingsField label="收货人 Получатель" value={f.china_recipient} onChange={v => upd("china_recipient", v)} />
+      <SettingsField label="电话 Телефон" value={f.china_phone} onChange={v => upd("china_phone", v)} />
+      <SettingsField label="地区 Регион" value={f.china_region} onChange={v => upd("china_region", v)} />
+      <SettingsField label="详细地址 Адрес" value={f.china_street} onChange={v => upd("china_street", v)} />
       <button onClick={save} disabled={busy} className="w-full py-3 rounded-xl font-bold text-white mt-2 transition-all active:scale-[0.98]"
         style={{ background: ok ? C.ready : C.stamp, fontFamily: F.body, opacity: busy ? 0.6 : 1 }}>
         {busy ? "Сохранение…" : ok ? "✅ Сохранено" : "💾 Сохранить"}
@@ -998,8 +1025,9 @@ function App() {
     setSettings(data);
   };
 
-  const loadProfile = async () => {
-    const { data } = await db.from("profiles").select("*").eq("id", (await db.auth.getUser()).data.user.id).single();
+  const loadProfile = async (userId) => {
+    if (!userId) { setProfile(null); return; }
+    const { data } = await db.from("profiles").select("*").eq("id", userId).single();
     setProfile(data);
   };
 
@@ -1013,14 +1041,14 @@ function App() {
     if (session === undefined) return;
     if (!session) { setReady(true); setProfile(null); return; }
     setReady(false);
-    Promise.all([loadProfile(), loadSettings()]).then(() => setReady(true));
+    Promise.all([loadProfile(session.user.id), loadSettings()]).then(() => setReady(true));
   }, [session]);
 
   if (session === undefined || !ready) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center" style={{ background: C.ink }}>
-        <div className="inline-block w-10 h-10 border-3 rounded-full border-t-transparent animate-spin" 
-          style={{ borderColor: C.stamp, borderWidth: 3 }}></div>
+        <div className="inline-block w-10 h-10 rounded-full border-t-transparent animate-spin"
+          style={{ border: `3px solid ${C.stamp}`, borderTopColor: "transparent" }}></div>
         <div className="mt-4 text-sm" style={{ color: "#9AA6B5", fontFamily: F.body }}>Загрузка…</div>
       </div>
     );
@@ -1028,8 +1056,11 @@ function App() {
 
   if (!session) return <Auth />;
   if (!profile) return (
-    <div className="min-h-screen flex items-center justify-center px-6 text-center" style={{ background: C.ink, color: "#fff", fontFamily: F.body }}>
+    <div className="min-h-screen flex flex-col items-center justify-center px-6 text-center gap-4" style={{ background: C.ink, color: "#fff", fontFamily: F.body }}>
       <div>Профиль не найден. Обратитесь в поддержку.</div>
+      <button onClick={() => db.auth.signOut()} className="px-6 py-2 rounded-lg text-sm font-bold" style={{ background: C.stamp, color: "#fff" }}>
+        Выйти
+      </button>
     </div>
   );
 
