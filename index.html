@@ -631,13 +631,6 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [searchQuery, setSearchQuery] = useState("");
   const rate = settings?.rate_per_kg || 0;
 
-  // ─── Создаем админ-клиент ──────────────────────────────────
-
-const dbAdmin = supabase.createClient(
-  "https://efsftuvvdewxvtfgssco.supabase.co",
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVmc2Z0dXZ2ZGV3eHZ0Zmdzc2NvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NDYyMDI2MiwiZXhwIjoyMTAwMTk2MjYyfQ.LXV_OuLCwH8IPvmBKwGznjuOYLuO5mpRomivR-0p1ek"
-);
-
   const load = async () => {
     const { data: p } = await db.from("parcels").select("*, profiles(client_code, full_name)").order("created_at", { ascending: false });
     setParcels(p || []);
@@ -647,7 +640,7 @@ const dbAdmin = supabase.createClient(
   };
   useEffect(() => { load(); }, []);
 
-  // ─── Функция сброса пароля ─────────────────────────────────
+  // ─── БЕЗОПАСНАЯ функция сброса пароля (без service_role) ──
   const resetUserPassword = async (user) => {
     if (!confirm(`Сбросить пароль для ${user.full_name || user.phone}?`)) return;
     
@@ -663,22 +656,24 @@ const dbAdmin = supabase.createClient(
     }
     
     try {
-      // Используем dbAdmin для смены пароля
-      const { error } = await dbAdmin.auth.admin.updateUserById(user.id, {
-        password: newPassword
+      const email = user.phone ? phoneToEmail(user.phone) : user.email;
+      
+      const { error } = await db.auth.resetPasswordForEmail(email, {
+        redirectTo: window.location.origin + "/reset-password"
       });
       
       if (error) throw error;
-      alert(`✅ Пароль для ${user.full_name || user.phone} успешно изменён!`);
-      load(); // Обновляем список
+      
+      alert(`✅ Ссылка для сброса пароля отправлена на ${email}\n\n` +
+            `Пользователь ${user.full_name || user.phone} получит инструкцию по смене пароля.`);
       
     } catch(e) {
       console.error("Reset password error:", e);
-      let msg = e?.message || "Не удалось сменить пароль";
-      if (msg.includes("permission") || msg.includes("Policy")) {
-        msg = "❌ Ошибка прав доступа. Проверьте service_role ключ в настройках.";
-      }
-      alert(msg);
+      alert(`❌ Ошибка: ${e?.message || "Неизвестная ошибка"}\n\n` +
+            `Для ручного сброса:\n` +
+            `1. app.supabase.com → Authentication → Users\n` +
+            `2. Найдите пользователя: ${user.phone}\n` +
+            `3. Нажмите "Reset password" и скопируйте ссылку`);
     }
   };
 
@@ -702,7 +697,6 @@ const dbAdmin = supabase.createClient(
     load();
   };
 
-  // ─── Сканер для админа ──────────────────────────────────────
   const handleScan = async (decoded) => {
     let track = decoded;
     const urlMatch = decoded.match(/\/([A-Z0-9]{8,})/i);
@@ -954,6 +948,8 @@ const dbAdmin = supabase.createClient(
   );
 }
 
+
+ 
 // ─── Настройки ──────────────────────────────────────────────────
 function SettingsForm({ settings, onSaved }) {
   const [f, setF] = useState({ ...settings });
