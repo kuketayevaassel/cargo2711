@@ -513,7 +513,9 @@ function ClientApp({ session, profile, settings, onLogout }) {
   };
 
   const copyAddr = () => {
-    const txt = `${settings.china_recipient} (${profile.client_code})\n${settings.china_phone}\n${settings.china_region}\n${settings.china_street} (${profile.client_code})`;
+    const d = (profile.phone || "").replace(/\D/g, "");
+    const myPhone = d.length === 11 ? d.slice(1) : d; // 77073088553 → 7073088553
+    const txt = `${settings.china_recipient}-${profile.client_code}\n${settings.china_phone}\n${settings.china_region}\n${settings.china_street}-(${profile.client_code}) ${myPhone}`;
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(txt);
     } else {
@@ -653,14 +655,18 @@ function ClientApp({ session, profile, settings, onLogout }) {
             <div className="rounded-2xl p-5 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
               <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>📍 Адрес склада в Китае</div>
               <div className="text-xs mb-4" style={{ color: C.inkSoft, fontFamily: F.body }}>
-                Укажите этот адрес при заказе. <b>Обязательно</b> добавьте ваш код <span style={{ color: C.stamp, fontFamily: F.mono }}>{profile.client_code}</span> к имени получателя.
+                Укажите этот адрес при заказе. Ваш код <span style={{ color: C.stamp, fontFamily: F.mono }}>{profile.client_code}</span> уже подставлен к получателю и адресу — копируйте как есть.
               </div>
               <div className="space-y-3">
                 {[
-                  ["收货人 (Получатель)", `${settings.china_recipient} (${profile.client_code})`],
+                  ["收货人 (Получатель)", `${settings.china_recipient}-${profile.client_code}`],
                   ["电话 (Телефон)", settings.china_phone],
                   ["地区 (Регион)", settings.china_region],
-                  ["详细地址 (Адрес)", `${settings.china_street} (${profile.client_code})`]
+                  ["详细地址 (Адрес)", (() => {
+                    const d = (profile.phone || "").replace(/\D/g, "");
+                    const myPhone = d.length === 11 ? d.slice(1) : d;
+                    return `${settings.china_street}-(${profile.client_code}) ${myPhone}`;
+                  })()]
                 ].map(([k, v]) => (
                   <div key={k}>
                     <div className="text-xs" style={{ color: C.inkSoft, fontFamily: F.body }}>{k}</div>
