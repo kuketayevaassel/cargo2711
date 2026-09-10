@@ -31,9 +31,8 @@
   .glass { background: rgba(255,255,255,0.06); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
   .card-hover { transition: all 0.2s ease; }
   .card-hover:active { transform: scale(0.98); }
-  .status-dot { transition: all 0.5s cubic-bezier(0.22, 1, 0.36, 1); }
-  .pulse-dot { animation: pulse-dot 1.5s ease-in-out infinite; }
-  @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  .flash-ok { animation: flashOk 0.6s ease; }
+  @keyframes flashOk { 0% { background: rgba(46,125,79,0.55); } 100% { background: transparent; } }
 </style>
 </head>
 <body>
@@ -97,7 +96,7 @@ const todayStr = () => {
 const priceKZT = (w, rate) => Math.round((w||0) * (rate||0));
 const shortTrack = t => t && t.length > 8 ? t.slice(0, 4) + "…" + t.slice(-4) : t;
 
-// Извлечь трек-номер из результата сканирования (общая функция)
+// Извлечь трек-номер из результата сканирования
 function extractTrack(decoded) {
   let track = decoded;
   const urlMatch = decoded.match(/\/([A-Z0-9]{8,})/i);
@@ -105,13 +104,50 @@ function extractTrack(decoded) {
   return track.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 }
 
+// Звуковой сигнал при сканировании (без файлов — чистый Web Audio)
+let _audioCtx = null;
+function playBeep(ok) {
+  try {
+    if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const ctx = _audioCtx;
+    if (ctx.state === "suspended") ctx.resume();
+    const tone = (freq, start, dur) => {
+      const o = ctx.createOscillator();
+      const g = ctx.createGain();
+      o.type = "sine";
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0.001, ctx.currentTime + start);
+      g.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + start + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + dur);
+      o.connect(g); g.connect(ctx.destination);
+      o.start(ctx.currentTime + start);
+      o.stop(ctx.currentTime + start + dur + 0.05);
+    };
+    if (ok) { tone(880, 0, 0.12); tone(1320, 0.13, 0.15); }   // «ди-дип» — успех
+    else { tone(220, 0, 0.35); }                               // низкий гудок — ошибка
+  } catch(_) {}
+}
+
+// Realtime-подписка на изменения таблицы parcels
+function useParcelsRealtime(onChange) {
+  useEffect(() => {
+    const ch = db.channel("parcels-rt-" + Math.random().toString(36).slice(2))
+      .on("postgres_changes", { event: "*", schema: "public", table: "parcels" }, () => onChange())
+      .subscribe();
+    return () => { db.removeChannel(ch); };
+  }, []);
+}
+
 // ─── Компонент сканера QR ──────────────────────────────────────
-function QRScanner({ onScan, onClose }) {
+// continuous=true: камера не закрывается после скана, коды дедуплицируются,
+// результат каждого скана показывается баннером (prop feedback)
+function QRScanner({ onScan, onClose, continuous, feedback, scanCount }) {
   const [error, setError] = useState(null);
   const [scanning, setScanning] = useState(false);
   const scannerRef = useRef(null);
   const containerRef = useRef(null);
   const firedRef = useRef(false);
+  const recentRef = useRef({}); // текст → timestamp, чтобы не сканить одно и то же подряд
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -128,14 +164,22 @@ function QRScanner({ onScan, onClose }) {
       { facingMode: "environment" },
       config,
       (decodedText) => {
-        // защита от многократного срабатывания на один и тот же кадр
-        if (firedRef.current) return;
-        firedRef.current = true;
-        setScanning(false);
-        html5QrCode.stop().catch(() => {});
-        if (onScan) onScan(decodedText);
+        const now = Date.now();
+        if (continuous) {
+          // один и тот же код игнорируем 4 секунды — иначе 10 срабатываний в секунду
+          const last = recentRef.current[decodedText] || 0;
+          if (now - last < 4000) return;
+          recentRef.current[decodedText] = now;
+          if (onScan) onScan(decodedText);
+        } else {
+          if (firedRef.current) return;
+          firedRef.current = true;
+          setScanning(false);
+          html5QrCode.stop().catch(() => {});
+          if (onScan) onScan(decodedText);
+        }
       },
-      () => { /* silent: кадры без QR — это нормально */ }
+      () => { /* кадры без QR — это нормально */ }
     ).then(() => setScanning(true))
     .catch(err => {
       console.error("QR error:", err);
@@ -145,7 +189,6 @@ function QRScanner({ onScan, onClose }) {
     return () => {
       const s = scannerRef.current;
       if (s) {
-        // clear() нельзя вызывать, пока камера работает — сначала stop()
         s.stop().then(() => s.clear()).catch(() => { try { s.clear(); } catch(_) {} });
       }
     };
@@ -158,10 +201,35 @@ function QRScanner({ onScan, onClose }) {
           <button onClick={onClose} className="w-10 h-10 rounded-full flex items-center justify-center text-white text-xl" style={{ background: C.stamp }}>✕</button>
         </div>
         <div className="p-4 text-center">
-          <div className="text-sm font-semibold text-white" style={{ fontFamily: F.body }}>Наведите камеру на QR-код трека</div>
-          <div className="text-xs mt-1" style={{ color: "#9AA6B5", fontFamily: F.body }}>Сканируйте накладную или экран продавца</div>
+          <div className="text-sm font-semibold text-white" style={{ fontFamily: F.body }}>
+            {continuous ? "Массовое сканирование" : "Наведите камеру на QR-код трека"}
+          </div>
+          <div className="text-xs mt-1" style={{ color: "#9AA6B5", fontFamily: F.body }}>
+            {continuous
+              ? "Сканируйте посылки одну за другой — камера не закроется"
+              : "Сканируйте накладную или экран продавца"}
+          </div>
+          {continuous && scanCount > 0 && (
+            <div className="mt-2 inline-block px-3 py-1 rounded-full text-xs font-bold"
+              style={{ background: C.ready + "33", color: "#7FD6A4", fontFamily: F.mono }}>
+              Обработано: {scanCount}
+            </div>
+          )}
         </div>
         <div id="qr-reader" ref={containerRef} className="w-full" style={{ minHeight: 320, background: "#0a111a" }}></div>
+
+        {/* Баннер с результатом последнего скана (режим "подряд") */}
+        {continuous && feedback && (
+          <div key={feedback.key} className="px-4 py-3 text-center text-sm font-bold flash-ok"
+            style={{
+              color: feedback.ok ? "#7FD6A4" : "#FF8A7A",
+              fontFamily: F.body,
+              borderTop: `1px solid ${C.line}22`
+            }}>
+            {feedback.text}
+          </div>
+        )}
+
         {error && (
           <div className="p-4 text-center">
             <div className="text-sm" style={{ color: C.stamp, fontFamily: F.body }}>{error}</div>
@@ -176,7 +244,7 @@ function QRScanner({ onScan, onClose }) {
         )}
         <div className="p-4 text-center border-t" style={{ borderColor: C.line + "33" }}>
           <button onClick={onClose} className="text-xs font-medium" style={{ color: "#9AA6B5", fontFamily: F.body }}>
-            ✕ Закрыть сканер
+            {continuous ? "✕ Завершить сканирование" : "✕ Закрыть сканер"}
           </button>
         </div>
       </div>
@@ -207,8 +275,6 @@ function Auth() {
           options: { data: { full_name: name, phone } }
         });
         if (error) throw error;
-        // Если в Supabase включено «Confirm email» — сессии не будет,
-        // а письмо на фиктивный адрес никогда не придёт.
         if (data?.user && !data?.session) {
           throw new Error("В Supabase включено подтверждение email. Отключите его: Authentication → Providers → Email → выключить «Confirm email».");
         }
@@ -286,7 +352,7 @@ function Auth() {
 }
 
 // ─── Накладная ──────────────────────────────────────────────────
-function Waybill({ parcel, rate, onBack }) {
+function Waybill({ parcel, rate, onBack, onDelete }) {
   const delivered = parcel.status === 5;
   const dates = parcel.status_dates || [];
 
@@ -371,6 +437,24 @@ function Waybill({ parcel, rate, onBack }) {
           </>
         )}
       </div>
+
+      {/* Удалить можно только пока посылка «Ожидается» — до приёмки на складе */}
+      {onDelete && parcel.status === 0 && (
+        <button
+          onClick={() => {
+            if (confirm(`Удалить трек ${parcel.track_number}?\n\nЭто действие нельзя отменить.`)) onDelete(parcel);
+          }}
+          className="w-full mt-4 py-3 rounded-xl text-sm font-bold transition-all active:scale-[0.98]"
+          style={{ background: "transparent", color: C.stamp, border: `1.5px solid ${C.stamp}55`, fontFamily: F.body }}
+        >
+          🗑 Удалить трек
+        </button>
+      )}
+      {onDelete && parcel.status > 0 && (
+        <div className="mt-4 text-xs text-center" style={{ color: C.inkSoft, fontFamily: F.body }}>
+          Посылка уже принята на складе — удалить её нельзя
+        </div>
+      )}
     </div>
   );
 }
@@ -395,6 +479,9 @@ function ClientApp({ session, profile, settings, onLogout }) {
   };
   useEffect(() => { load(); }, []);
 
+  // Живое обновление: админ отсканировал — статус у клиента обновился сам
+  useParcelsRealtime(load);
+
   const addTrack = async (trackNumber) => {
     const t = (trackNumber || newTrack).trim().toUpperCase();
     if (t.length < 6) { alert("Трек-номер слишком короткий (минимум 6 символов)"); return; }
@@ -404,6 +491,14 @@ function ClientApp({ session, profile, settings, onLogout }) {
     if (error) { alert("Не удалось добавить: " + error.message); return; }
     setNewTrack("");
     setShowScanner(false);
+    load();
+  };
+
+  const deleteParcel = async (p) => {
+    // подстраховка: удаляем только «Ожидается»
+    const { error } = await db.from("parcels").delete().eq("id", p.id).eq("status", 0);
+    if (error) { alert("Не удалось удалить: " + error.message); return; }
+    setSel(null);
     load();
   };
 
@@ -422,7 +517,6 @@ function ClientApp({ session, profile, settings, onLogout }) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(txt);
     } else {
-      // запасной вариант для старых браузеров / http
       const ta = document.createElement("textarea");
       ta.value = txt;
       document.body.appendChild(ta);
@@ -467,7 +561,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
       </div>
 
       {selP ? (
-        <Waybill parcel={selP} rate={rate} onBack={() => setSel(null)} />
+        <Waybill parcel={selP} rate={rate} onBack={() => setSel(null)} onDelete={deleteParcel} />
       ) : (
         <div className="px-4 pt-4">
           {tab === "parcels" && (
@@ -636,6 +730,81 @@ function ClientApp({ session, profile, settings, onLogout }) {
   );
 }
 
+// ─── Фильтры статусов в админке ─────────────────────────────────
+const ADMIN_FILTERS = [
+  { id: "all",     label: "Все",           test: () => true },
+  { id: "waiting", label: "⏳ Ожидаются",   test: p => p.status === 0 },
+  { id: "transit", label: "🚚 В пути",      test: p => p.status >= 1 && p.status <= 3 },
+  { id: "ready",   label: "✅ К выдаче",    test: p => p.status === 4 },
+  { id: "done",    label: "🎯 Выданы",      test: p => p.status === 5 },
+  { id: "unpaid",  label: "💰 Не оплачено", test: p => !p.paid && p.weight > 0 },
+];
+
+// ─── Экспорт в Excel (CSV с BOM — открывается в Excel по двойному клику) ───
+function exportToExcel(parcels, rate, fromDate, toDate) {
+  const from = fromDate ? new Date(fromDate + "T00:00:00") : null;
+  const to = toDate ? new Date(toDate + "T23:59:59") : null;
+
+  const rows = parcels.filter(p => {
+    const d = new Date(p.created_at);
+    return (!from || d >= from) && (!to || d <= to);
+  });
+
+  if (rows.length === 0) {
+    alert("За выбранный период посылок нет");
+    return;
+  }
+
+  const esc = v => {
+    const s = String(v == null ? "" : v);
+    return /[";\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  // число с запятой — чтобы русский Excel понял его как число
+  const num = v => String(v).replace(".", ",");
+
+  const header = ["Дата добавления", "Трек-номер", "Код клиента", "Клиент", "Статус", "Вес, кг", "Сумма, тг", "Оплачено", "Дата выдачи"];
+  const lines = [header.join(";")];
+
+  let totalWeight = 0, totalSum = 0, totalPaid = 0;
+
+  rows.forEach(p => {
+    const created = new Date(p.created_at);
+    const pad = n => String(n).padStart(2, "0");
+    const createdStr = `${pad(created.getDate())}.${pad(created.getMonth()+1)}.${created.getFullYear()}`;
+    const sum = priceKZT(p.weight, rate);
+    const issuedDate = (p.status_dates || [])[5] || "";
+    totalWeight += Number(p.weight) || 0;
+    totalSum += sum;
+    if (p.paid) totalPaid += sum;
+    lines.push([
+      createdStr,
+      esc(p.track_number),
+      esc(p.profiles?.client_code || ""),
+      esc(p.profiles?.full_name || ""),
+      esc(STATUSES[p.status].label),
+      num((Number(p.weight) || 0).toFixed(2)),
+      sum,
+      p.paid ? "Да" : "Нет",
+      issuedDate
+    ].join(";"));
+  });
+
+  lines.push("");
+  lines.push(["ИТОГО", "", "", "", `Посылок: ${rows.length}`, num(totalWeight.toFixed(2)), totalSum, `Оплачено: ${totalPaid}`, ""].join(";"));
+
+  // \uFEFF (BOM) — обязателен, иначе Excel покажет кракозябры вместо кириллицы
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const stamp = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `cargo2711_${stamp}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 // ─── Админка ─────────────────────────────────────────────────────
 function AdminApp({ settings, reloadSettings, onLogout }) {
   const [tab, setTab] = useState("parcels");
@@ -644,7 +813,17 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [showScanner, setShowScanner] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [scanFeedback, setScanFeedback] = useState(null);
+  const [scanCount, setScanCount] = useState(0);
+  const [exportFrom, setExportFrom] = useState("");
+  const [exportTo, setExportTo] = useState("");
   const rate = settings?.rate_per_kg || 0;
+
+  // актуальный список посылок для обработчика сканирования
+  // (state в колбэке сканера может быть устаревшим — камера живёт дольше рендера)
+  const parcelsRef = useRef([]);
+  useEffect(() => { parcelsRef.current = parcels; }, [parcels]);
 
   const load = async () => {
     const { data: p } = await db.from("parcels").select("*, profiles(client_code, full_name)").order("created_at", { ascending: false });
@@ -654,6 +833,9 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     setLoading(false);
   };
   useEffect(() => { load(); }, []);
+
+  // Живое обновление: клиент добавил трек — он сразу появился в админке
+  useParcelsRealtime(load);
 
   // ─── СБРОС ПАРОЛЯ: админ вводит новый пароль сам, БЕЗ писем и СМС ──
   const resetUserPassword = async (user) => {
@@ -676,7 +858,6 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
       });
 
       if (error) {
-        // вытаскиваем реальный текст ошибки из ответа Edge Function
         let msg = error.message || "Неизвестная ошибка";
         try {
           const body = await error.context?.json?.();
@@ -716,25 +897,31 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     load();
   };
 
+  // ─── Массовое сканирование: камера не закрывается, статусы летят один за другим ──
+  const feedbackKey = useRef(0);
+  const showFeedback = (ok, text) => {
+    feedbackKey.current += 1;
+    setScanFeedback({ ok, text, key: feedbackKey.current });
+    playBeep(ok);
+    if (navigator.vibrate) navigator.vibrate(ok ? 100 : [80, 60, 80]);
+  };
+
   const handleScan = async (decoded) => {
     const track = extractTrack(decoded);
 
     if (track.length < 6) {
-      alert("❌ Не удалось распознать трек-номер");
-      setShowScanner(false);
+      showFeedback(false, "❌ Не удалось распознать трек-номер");
       return;
     }
 
-    const found = parcels.find(p => p.track_number === track);
+    const found = parcelsRef.current.find(p => p.track_number === track);
     if (!found) {
-      alert(`❌ Посылка с треком ${track} не найдена`);
-      setShowScanner(false);
+      showFeedback(false, `❌ ${shortTrack(track)} — не найдена в базе`);
       return;
     }
 
     if (found.status >= 5) {
-      alert(`✅ Посылка ${track} уже выдана`);
-      setShowScanner(false);
+      showFeedback(false, `⚠️ ${shortTrack(track)} — уже выдана`);
       return;
     }
 
@@ -749,28 +936,32 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
 
       if (error) throw error;
 
-      const statusName = STATUSES[nextStatus].label;
-      if (navigator.vibrate) navigator.vibrate(200);
-      alert(`✅ ${track}\n→ ${statusName}\n📅 ${todayStr()}`);
-
+      showFeedback(true, `✅ ${shortTrack(track)} → ${STATUSES[nextStatus].label}`);
+      setScanCount(n => n + 1);
       await load();
-      setSearchQuery(track);
 
     } catch(e) {
-      alert("❌ Ошибка: " + e.message);
+      showFeedback(false, "❌ Ошибка: " + e.message);
     }
+  };
 
-    setShowScanner(false);
+  const openScanner = () => {
+    setScanFeedback(null);
+    setScanCount(0);
+    setShowScanner(true);
   };
 
   const inTransit = parcels.filter(p => p.status >= 1 && p.status <= 3).length;
   const ready = parcels.filter(p => p.status === 4).length;
   const revenue = parcels.filter(p => p.paid).reduce((s, p) => s + priceKZT(p.weight, rate), 0);
 
-  const filteredParcels = parcels.filter(p =>
-    p.track_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (p.profiles?.client_code || "").toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  const activeFilter = ADMIN_FILTERS.find(f => f.id === statusFilter) || ADMIN_FILTERS[0];
+  const filteredParcels = parcels
+    .filter(activeFilter.test)
+    .filter(p =>
+      p.track_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (p.profiles?.client_code || "").toLowerCase().includes(searchQuery.toLowerCase())
+    );
 
   return (
     <div className="min-h-screen pb-20" style={{ background: C.paper }}>
@@ -801,7 +992,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
       <div className="px-4 pt-4">
         {tab === "parcels" && (
           <>
-            <div className="flex gap-2 mb-4">
+            <div className="flex gap-2 mb-3">
               <div className="flex-1 relative">
                 <input
                   value={searchQuery}
@@ -811,10 +1002,10 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                   style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, background: C.card, color: C.ink }}
                 />
                 <button
-                  onClick={() => setShowScanner(true)}
+                  onClick={openScanner}
                   className="absolute right-2 top-1/2 -translate-y-1/2 w-9 h-9 rounded-lg flex items-center justify-center text-lg"
                   style={{ background: C.stamp + "15", color: C.stamp }}
-                  title="Сканировать QR-код для изменения статуса"
+                  title="Массовое сканирование QR-кодов"
                 >
                   📷
                 </button>
@@ -824,8 +1015,31 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               </button>
             </div>
 
+            {/* Фильтры по статусу */}
+            <div className="flex gap-2 mb-3 overflow-x-auto pb-1" style={{ scrollbarWidth: "none" }}>
+              {ADMIN_FILTERS.map(f => {
+                const cnt = f.id === "all" ? parcels.length : parcels.filter(f.test).length;
+                const active = statusFilter === f.id;
+                return (
+                  <button
+                    key={f.id}
+                    onClick={() => setStatusFilter(f.id)}
+                    className="flex-shrink-0 text-xs font-bold px-3 py-1.5 rounded-full transition-all active:scale-95"
+                    style={{
+                      background: active ? C.ink : C.card,
+                      color: active ? "#fff" : C.inkSoft,
+                      border: `1.5px solid ${active ? C.ink : C.line}`,
+                      fontFamily: F.body
+                    }}
+                  >
+                    {f.label} <span style={{ fontFamily: F.mono, opacity: 0.75 }}>{cnt}</span>
+                  </button>
+                );
+              })}
+            </div>
+
             <div className="text-xs mb-3 text-center" style={{ color: C.inkSoft, fontFamily: F.body }}>
-              📷 Сканируйте QR-код на посылке — статус автоматически изменится на следующий
+              📷 Режим «подряд»: сканируйте посылки одну за другой, камера не закрывается
             </div>
 
             {loading && (
@@ -933,7 +1147,43 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
           </>
         )}
 
-        {tab === "settings" && <SettingsForm settings={settings} onSaved={reloadSettings} />}
+        {tab === "settings" && (
+          <>
+            {/* Экспорт в Excel */}
+            <div className="rounded-2xl p-5 mb-4 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+              <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>📊 Экспорт в Excel</div>
+              <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                Все посылки за период: трек, клиент, статус, вес, сумма, оплата. Файл открывается в Excel.
+              </div>
+              <div className="flex gap-2 mb-3">
+                <div className="flex-1">
+                  <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>С даты</label>
+                  <input type="date" value={exportFrom} onChange={e => setExportFrom(e.target.value)}
+                    className="w-full rounded-xl px-3 py-2.5 outline-none text-sm"
+                    style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+                </div>
+                <div className="flex-1">
+                  <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>По дату</label>
+                  <input type="date" value={exportTo} onChange={e => setExportTo(e.target.value)}
+                    className="w-full rounded-xl px-3 py-2.5 outline-none text-sm"
+                    style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+                </div>
+              </div>
+              <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                Оставьте даты пустыми, чтобы выгрузить всё.
+              </div>
+              <button
+                onClick={() => exportToExcel(parcels, rate, exportFrom, exportTo)}
+                className="w-full py-3 rounded-xl font-bold text-white transition-all active:scale-[0.98]"
+                style={{ background: C.transit, fontFamily: F.body }}
+              >
+                ⬇ Скачать таблицу
+              </button>
+            </div>
+
+            <SettingsForm settings={settings} onSaved={reloadSettings} />
+          </>
+        )}
       </div>
 
       <div className="fixed bottom-0 left-0 right-0 flex z-10" style={{ background: C.card, borderTop: `1px solid ${C.line}` }}>
@@ -954,12 +1204,20 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
         ))}
       </div>
 
-      {showScanner && <QRScanner onScan={handleScan} onClose={() => setShowScanner(false)} />}
+      {showScanner && (
+        <QRScanner
+          continuous
+          onScan={handleScan}
+          onClose={() => setShowScanner(false)}
+          feedback={scanFeedback}
+          scanCount={scanCount}
+        />
+      )}
     </div>
   );
 }
 
-// ─── Поле настроек (ВНЕ SettingsForm — иначе инпут теряет фокус при каждом символе) ───
+// ─── Поле настроек (вне SettingsForm — иначе инпут теряет фокус) ───
 function SettingsField({ label, value, onChange, type }) {
   return (
     <div className="mb-3">
