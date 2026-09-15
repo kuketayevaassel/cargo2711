@@ -469,6 +469,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
   const [showScanner, setShowScanner] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [copied, setCopied] = useState(false);
+  const [copiedField, setCopiedField] = useState(null);
   const [calcWeight, setCalcWeight] = useState("");
   const rate = settings?.rate_per_kg || 0;
 
@@ -528,16 +529,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
     }
   };
 
-  const copyAddr = () => {
-    const d = (profile.phone || "").replace(/\D/g, "");
-    // 77007676067 → 87007676067 (казахстанский формат через 8)
-    const myPhone = d ? "8" + (d.length === 11 ? d.slice(1) : d) : "";
-    // trim() — защита от случайных пробелов в настройках: парсер Taobao/Pinduoduo
-    // режет строку по пробелу и выбрасывает код клиента
-    const rec = (settings.china_recipient || "").trim();
-    const street = (settings.china_street || "").trim();
-    // без дефисов и скобок — иначе Taobao/1688/Pinduoduo выбрасывает код при распознавании
-    const txt = `${rec}${profile.client_code}\n${(settings.china_phone || "").trim()}\n${(settings.china_region || "").trim()}\n${street}${profile.client_code} ${myPhone}`;
+  const writeClipboard = (txt) => {
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(txt);
     } else {
@@ -548,6 +540,29 @@ function ClientApp({ session, profile, settings, onLogout }) {
       document.execCommand("copy");
       document.body.removeChild(ta);
     }
+  };
+
+  const copyField = (key, value) => {
+    writeClipboard(value);
+    setCopiedField(key);
+    setTimeout(() => setCopiedField(null), 1500);
+  };
+
+  const copyAddr = () => {
+    const d = (profile.phone || "").replace(/\D/g, "");
+    // 77007676067 → 87007676067 (казахстанский формат через 8)
+    const myPhone = d ? "8" + (d.length === 11 ? d.slice(1) : d) : "";
+    // trim() — защита от случайных пробелов в настройках
+    const rec = (settings.china_recipient || "").trim();
+    const street = (settings.china_street || "").trim();
+    const region = (settings.china_region || "").trim();
+    const chinaPhone = (settings.china_phone || "").trim();
+    // Формат, который гарантированно распознаёт Pinduoduo/Taobao
+    // (проверен на реальных сохранённых адресах):
+    //   имя+код，телефон
+    //   регион улица+код сотовый_клиента
+    const txt = `${rec}${profile.client_code}，${chinaPhone}\n${region} ${street}${profile.client_code} ${myPhone}`;
+    writeClipboard(txt);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -682,7 +697,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
             <div className="rounded-2xl p-5 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
               <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>📍 Адрес склада в Китае</div>
               <div className="text-xs mb-4" style={{ color: C.inkSoft, fontFamily: F.body }}>
-                Укажите этот адрес при заказе. Ваш код <span style={{ color: C.stamp, fontFamily: F.mono }}>{profile.client_code}</span> уже подставлен к получателю и адресу — копируйте как есть.
+                Ваш код <span style={{ color: C.stamp, fontFamily: F.mono }}>{profile.client_code}</span> уже подставлен. Копируйте каждое поле кнопкой 📋 и вставляйте по отдельности — так код не потеряется.
               </div>
               <div className="space-y-3">
                 {[
@@ -695,15 +710,33 @@ function ClientApp({ session, profile, settings, onLogout }) {
                     return `${(settings.china_street || "").trim()}${profile.client_code} ${myPhone}`;
                   })()]
                 ].map(([k, v]) => (
-                  <div key={k}>
-                    <div className="text-xs" style={{ color: C.inkSoft, fontFamily: F.body }}>{k}</div>
-                    <div className="text-sm break-all" style={{ color: C.ink, fontFamily: F.mono }}>{v}</div>
+                  <div key={k} className="flex items-center gap-2">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs" style={{ color: C.inkSoft, fontFamily: F.body }}>{k}</div>
+                      <div className="text-sm break-all" style={{ color: C.ink, fontFamily: F.mono }}>{v}</div>
+                    </div>
+                    <button
+                      onClick={() => copyField(k, v)}
+                      className="w-9 h-9 rounded-lg flex items-center justify-center text-base flex-shrink-0 transition-all active:scale-90"
+                      style={{
+                        background: copiedField === k ? C.ready + "22" : C.stamp + "12",
+                        color: copiedField === k ? C.ready : C.stamp
+                      }}
+                      title="Скопировать это поле"
+                    >
+                      {copiedField === k ? "✓" : "📋"}
+                    </button>
                   </div>
                 ))}
               </div>
-              <button onClick={copyAddr} className="w-full py-3 rounded-xl font-bold text-white mt-4 transition-all active:scale-[0.98]"
+
+              <div className="mt-4 rounded-xl px-3 py-2.5 text-xs" style={{ background: C.paper, color: C.inkSoft, fontFamily: F.body, border: `1px dashed ${C.line}` }}>
+                <b style={{ color: C.ink }}>Pinduoduo:</b> не вставляйте адрес целиком в окно распознавания — оно вырезает ваш код. Откройте «добавить адрес» и вставьте каждое поле по отдельности; регион 广东省 → 佛山市 → 南海区 выберите из списка. Сохраните адрес один раз — дальше просто выбирайте его при заказах.
+              </div>
+
+              <button onClick={copyAddr} className="w-full py-3 rounded-xl font-bold text-white mt-3 transition-all active:scale-[0.98]"
                 style={{ background: copied ? C.ready : C.stamp, fontFamily: F.body }}>
-                {copied ? "✅ Скопировано" : "📋 Скопировать адрес"}
+                {copied ? "✅ Скопировано" : "📋 Скопировать всё (для Taobao / 1688)"}
               </button>
             </div>
           )}
