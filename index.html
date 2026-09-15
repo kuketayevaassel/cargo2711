@@ -532,8 +532,12 @@ function ClientApp({ session, profile, settings, onLogout }) {
     const d = (profile.phone || "").replace(/\D/g, "");
     // 77007676067 → 87007676067 (казахстанский формат через 8)
     const myPhone = d ? "8" + (d.length === 11 ? d.slice(1) : d) : "";
-    // без дефисов и скобок — иначе Taobao/1688 выбрасывает код при распознавании
-    const txt = `${settings.china_recipient}${profile.client_code}\n${settings.china_phone}\n${settings.china_region}\n${settings.china_street}${profile.client_code} ${myPhone}`;
+    // trim() — защита от случайных пробелов в настройках: парсер Taobao/Pinduoduo
+    // режет строку по пробелу и выбрасывает код клиента
+    const rec = (settings.china_recipient || "").trim();
+    const street = (settings.china_street || "").trim();
+    // без дефисов и скобок — иначе Taobao/1688/Pinduoduo выбрасывает код при распознавании
+    const txt = `${rec}${profile.client_code}\n${(settings.china_phone || "").trim()}\n${(settings.china_region || "").trim()}\n${street}${profile.client_code} ${myPhone}`;
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(txt);
     } else {
@@ -682,13 +686,13 @@ function ClientApp({ session, profile, settings, onLogout }) {
               </div>
               <div className="space-y-3">
                 {[
-                  ["收货人 (Получатель)", `${settings.china_recipient}${profile.client_code}`],
-                  ["电话 (Телефон)", settings.china_phone],
-                  ["地区 (Регион)", settings.china_region],
+                  ["收货人 (Получатель)", `${(settings.china_recipient || "").trim()}${profile.client_code}`],
+                  ["电话 (Телефон)", (settings.china_phone || "").trim()],
+                  ["地区 (Регион)", (settings.china_region || "").trim()],
                   ["详细地址 (Адрес)", (() => {
                     const d = (profile.phone || "").replace(/\D/g, "");
                     const myPhone = d ? "8" + (d.length === 11 ? d.slice(1) : d) : "";
-                    return `${settings.china_street}${profile.client_code} ${myPhone}`;
+                    return `${(settings.china_street || "").trim()}${profile.client_code} ${myPhone}`;
                   })()]
                 ].map(([k, v]) => (
                   <div key={k}>
