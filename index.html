@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="theme-color" content="#14202E">
 <link rel="manifest" href="manifest.json">
-<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
 <meta name="apple-mobile-web-app-title" content="cargo_2711">
@@ -370,7 +372,7 @@ function Waybill({ parcel, rate, onBack, onDelete }) {
         )}
         <div className="text-xs uppercase tracking-wider mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Трек-номер</div>
         <div style={{ fontFamily: F.mono, fontSize: 20, fontWeight: 600, color: C.ink, letterSpacing: 1 }}>{parcel.track_number}</div>
-        {parcel.title && <div className="mt-1 text-sm" style={{ color: C.inkSoft, fontFamily: F.body }}>{parcel.title}</div>}
+        {parcel.title && <div className="mt-1 text-sm font-semibold" style={{ color: C.inkSoft, fontFamily: F.body }}>📦 {parcel.title}</div>}
 
         <div className="mt-4" style={{ borderTop: `2px dashed ${C.line}` }}></div>
 
@@ -465,6 +467,9 @@ function ClientApp({ session, profile, settings, onLogout }) {
   const [parcels, setParcels] = useState([]);
   const [sel, setSel] = useState(null);
   const [newTrack, setNewTrack] = useState("");
+  const [newTitle, setNewTitle] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [addErr, setAddErr] = useState("");
   const [loading, setLoading] = useState(true);
   const [showScanner, setShowScanner] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -482,15 +487,32 @@ function ClientApp({ session, profile, settings, onLogout }) {
   // Живое обновление: админ отсканировал — статус у клиента обновился сам
   useParcelsRealtime(load);
 
-  const addTrack = async (trackNumber) => {
-    const t = (trackNumber || newTrack).trim().toUpperCase();
-    if (t.length < 6) { alert("Трек-номер слишком короткий (минимум 6 символов)"); return; }
-    const exists = parcels.some(p => p.track_number === t);
-    if (exists) { alert("Этот трек-номер уже добавлен"); return; }
-    const { error } = await db.from("parcels").insert({ client_id: session.user.id, track_number: t });
-    if (error) { alert("Не удалось добавить: " + error.message); return; }
+  // Открыть окно добавления (трек может быть уже введён или отсканирован)
+  const openAdd = (track) => {
+    setNewTrack((track || newTrack || "").toUpperCase());
+    setAddErr("");
+    setShowAdd(true);
+  };
+
+  const closeAdd = () => {
+    setShowAdd(false);
     setNewTrack("");
-    setShowScanner(false);
+    setNewTitle("");
+    setAddErr("");
+  };
+
+  const addTrack = async () => {
+    const t = newTrack.trim().toUpperCase();
+    if (t.length < 6) { setAddErr("Трек-номер слишком короткий (минимум 6 символов)"); return; }
+    const exists = parcels.some(p => p.track_number === t);
+    if (exists) { setAddErr("Этот трек-номер уже добавлен"); return; }
+    const { error } = await db.from("parcels").insert({
+      client_id: session.user.id,
+      track_number: t,
+      title: newTitle.trim() || null
+    });
+    if (error) { setAddErr("Не удалось добавить: " + error.message); return; }
+    closeAdd();
     load();
   };
 
@@ -504,11 +526,11 @@ function ClientApp({ session, profile, settings, onLogout }) {
 
   const handleScan = (decoded) => {
     const track = extractTrack(decoded);
+    setShowScanner(false);
     if (track.length >= 6) {
-      addTrack(track);
+      openAdd(track); // после скана открываем окно — можно дописать описание
     } else {
       alert("Не удалось распознать трек-номер. Попробуйте ввести вручную.");
-      setShowScanner(false);
     }
   };
 
@@ -576,7 +598,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
                     placeholder="Вставьте трек-номер"
                     className="w-full rounded-xl px-4 py-3 pr-12 outline-none"
                     style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, fontSize: 14, background: C.card, color: C.ink }}
-                    onKeyDown={e => e.key === "Enter" && addTrack()}
+                    onKeyDown={e => e.key === "Enter" && openAdd()}
                   />
                   <button
                     onClick={() => setShowScanner(true)}
@@ -588,7 +610,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
                   </button>
                 </div>
                 <button
-                  onClick={() => addTrack()}
+                  onClick={() => openAdd()}
                   className="px-5 rounded-xl font-bold text-white text-xl transition-all active:scale-95"
                   style={{ background: C.ink }}
                 >
@@ -600,7 +622,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
                 <input
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
-                  placeholder="🔍 Поиск по треку…"
+                  placeholder="🔍 Поиск по треку или описанию…"
                   className="w-full rounded-xl px-4 py-2.5 outline-none text-sm"
                   style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, background: C.card, color: C.ink }}
                 />
@@ -629,12 +651,17 @@ function ClientApp({ session, profile, settings, onLogout }) {
                   className="w-full text-left rounded-xl p-4 mb-3 card-hover slide-up"
                   style={{ background: C.card, border: `1px solid ${C.line}`, animationDelay: `${idx * 30}ms` }}
                 >
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center justify-between mb-1">
                     <span style={{ fontFamily: F.mono, fontSize: 14, fontWeight: 600, color: C.ink }}>
                       {shortTrack(p.track_number)}
                     </span>
                     <span style={{ color: C.inkSoft, fontFamily: F.body, fontSize: 20 }}>›</span>
                   </div>
+                  {p.title && (
+                    <div className="text-sm mb-1 truncate" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                      {p.title}
+                    </div>
+                  )}
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold px-2.5 py-1 rounded-full"
                       style={{ background: STATUSES[p.status].color + "18", color: STATUSES[p.status].color, fontFamily: F.body }}>
@@ -711,6 +738,59 @@ function ClientApp({ session, profile, settings, onLogout }) {
         </div>
       )}
 
+      {/* ─── Окно добавления посылки: трек + описание ─── */}
+      {showAdd && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center px-4"
+          style={{ background: "rgba(20,32,46,0.55)", backdropFilter: "blur(6px)" }}
+          onClick={closeAdd}>
+          <div className="w-full max-w-sm rounded-2xl p-5 slide-up" style={{ background: C.card }}
+            onClick={e => e.stopPropagation()}>
+            <div className="text-sm font-bold mb-4" style={{ color: C.ink, fontFamily: F.body }}>
+              ➕ Новая посылка
+            </div>
+            <div className="mb-3">
+              <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Трек-номер</label>
+              <input
+                value={newTrack}
+                onChange={e => setNewTrack(e.target.value.toUpperCase())}
+                placeholder="Введите трек-код"
+                autoFocus={!newTrack}
+                className="w-full rounded-xl px-4 py-3 outline-none"
+                style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, fontSize: 14, color: C.ink }}
+              />
+            </div>
+            <div className="mb-4">
+              <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Описание (необязательно)</label>
+              <input
+                value={newTitle}
+                onChange={e => setNewTitle(e.target.value)}
+                placeholder="Например: куртка"
+                autoFocus={!!newTrack}
+                maxLength={60}
+                className="w-full rounded-xl px-4 py-3 outline-none"
+                style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, fontSize: 14, color: C.ink }}
+                onKeyDown={e => e.key === "Enter" && addTrack()}
+              />
+            </div>
+            {addErr && (
+              <div className="text-sm mb-3 text-center" style={{ color: C.stamp, fontFamily: F.body }}>{addErr}</div>
+            )}
+            <div className="flex gap-2">
+              <button onClick={closeAdd}
+                className="flex-1 py-3 rounded-xl font-bold transition-all active:scale-[0.98]"
+                style={{ background: "transparent", color: C.stamp, border: `1.5px solid ${C.stamp}55`, fontFamily: F.body }}>
+                Закрыть
+              </button>
+              <button onClick={addTrack}
+                className="flex-1 py-3 rounded-xl font-bold text-white transition-all active:scale-[0.98]"
+                style={{ background: C.ink, fontFamily: F.body }}>
+                Добавить
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {!selP && (
         <div className="fixed bottom-0 left-0 right-0 flex z-10" style={{ background: C.card, borderTop: `1px solid ${C.line}` }}>
           {[
@@ -768,7 +848,7 @@ function exportToExcel(parcels, rate, fromDate, toDate) {
   // число с запятой — чтобы русский Excel понял его как число
   const num = v => String(v).replace(".", ",");
 
-  const header = ["Дата добавления", "Трек-номер", "Код клиента", "Клиент", "Статус", "Вес, кг", "Сумма, тг", "Оплачено", "Дата выдачи"];
+  const header = ["Дата добавления", "Трек-номер", "Описание", "Код клиента", "Клиент", "Статус", "Вес, кг", "Сумма, тг", "Оплачено", "Дата выдачи"];
   const lines = [header.join(";")];
 
   let totalWeight = 0, totalSum = 0, totalPaid = 0;
@@ -785,6 +865,7 @@ function exportToExcel(parcels, rate, fromDate, toDate) {
     lines.push([
       createdStr,
       esc(p.track_number),
+      esc(p.title || ""),
       esc(p.profiles?.client_code || ""),
       esc(p.profiles?.full_name || ""),
       esc(STATUSES[p.status].label),
@@ -796,7 +877,7 @@ function exportToExcel(parcels, rate, fromDate, toDate) {
   });
 
   lines.push("");
-  lines.push(["ИТОГО", "", "", "", `Посылок: ${rows.length}`, num(totalWeight.toFixed(2)), totalSum, `Оплачено: ${totalPaid}`, ""].join(";"));
+  lines.push(["ИТОГО", "", "", "", "", `Посылок: ${rows.length}`, num(totalWeight.toFixed(2)), totalSum, `Оплачено: ${totalPaid}`, ""].join(";"));
 
   // \uFEFF (BOM) — обязателен, иначе Excel покажет кракозябры вместо кириллицы
   const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
@@ -966,7 +1047,8 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     .filter(activeFilter.test)
     .filter(p =>
       p.track_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (p.profiles?.client_code || "").toLowerCase().includes(searchQuery.toLowerCase())
+      (p.profiles?.client_code || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (p.title || "").toLowerCase().includes(searchQuery.toLowerCase())
     );
 
   return (
@@ -1003,7 +1085,15 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                 <input
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
-                  placeholder="🔍 Поиск по треку или коду клиента"
+                  onKeyDown={async e => {
+                    // USB-сканер «печатает» трек и жмёт Enter — обрабатываем как скан
+                    if (e.key === "Enter" && searchQuery.trim().length >= 6) {
+                      const q = searchQuery;
+                      setSearchQuery("");
+                      await handleScan(q);
+                    }
+                  }}
+                  placeholder="🔍 Поиск / USB-сканер"
                   className="w-full rounded-xl px-4 py-3 pr-12 outline-none text-sm"
                   style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, background: C.card, color: C.ink }}
                 />
@@ -1045,8 +1135,20 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
             </div>
 
             <div className="text-xs mb-3 text-center" style={{ color: C.inkSoft, fontFamily: F.body }}>
-              📷 Режим «подряд»: сканируйте посылки одну за другой, камера не закрывается
+              📷 Камера — режим «подряд» · USB-сканер: кликните в поле поиска и сканируйте
             </div>
+
+            {!showScanner && scanFeedback && (
+              <div key={scanFeedback.key} className="rounded-xl px-4 py-3 mb-3 text-center text-sm font-bold flash-ok"
+                style={{
+                  background: scanFeedback.ok ? C.ready + "18" : C.stamp + "15",
+                  color: scanFeedback.ok ? C.ready : C.stamp,
+                  border: `1.5px solid ${scanFeedback.ok ? C.ready : C.stamp}33`,
+                  fontFamily: F.body
+                }}>
+                {scanFeedback.text}
+              </div>
+            )}
 
             {loading && (
               <div className="text-sm text-center py-12" style={{ color: C.inkSoft, fontFamily: F.body }}>
@@ -1074,6 +1176,11 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                     {p.profiles?.client_code || "—"}
                   </span>
                 </div>
+                {p.title && (
+                  <div className="text-xs mb-1 truncate" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                    {p.title}
+                  </div>
+                )}
                 <div className="flex items-center gap-2 mb-2">
                   <span className="text-xs font-semibold px-2 py-0.5 rounded-full"
                     style={{ background: STATUSES[p.status].color + "18", color: STATUSES[p.status].color, fontFamily: F.body }}>
@@ -1159,7 +1266,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
             <div className="rounded-2xl p-5 mb-4 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
               <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>📊 Экспорт в Excel</div>
               <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
-                Все посылки за период: трек, клиент, статус, вес, сумма, оплата. Файл открывается в Excel.
+                Все посылки за период: трек, описание, клиент, статус, вес, сумма, оплата. Файл открывается в Excel.
               </div>
               <div className="flex gap-2 mb-3">
                 <div className="flex-1">
