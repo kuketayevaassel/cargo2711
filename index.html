@@ -440,22 +440,17 @@ function Waybill({ parcel, rate, onBack, onDelete }) {
         )}
       </div>
 
-      {/* Удалить можно только пока посылка «Ожидается» — до приёмки на складе */}
-      {onDelete && parcel.status === 0 && (
+      {/* Удалить трек можно в любой момент */}
+      {onDelete && (
         <button
           onClick={() => {
-            if (confirm(`Удалить трек ${parcel.track_number}?\n\nЭто действие нельзя отменить.`)) onDelete(parcel);
+            if (confirm(`Удалить трек ${parcel.track_number}?\n\nПосылка исчезнет из отслеживания. Это действие нельзя отменить.`)) onDelete(parcel);
           }}
           className="w-full mt-4 py-3 rounded-xl text-sm font-bold transition-all active:scale-[0.98]"
           style={{ background: "transparent", color: C.stamp, border: `1.5px solid ${C.stamp}55`, fontFamily: F.body }}
         >
           🗑 Удалить трек
         </button>
-      )}
-      {onDelete && parcel.status > 0 && (
-        <div className="mt-4 text-xs text-center" style={{ color: C.inkSoft, fontFamily: F.body }}>
-          Посылка уже принята на складе — удалить её нельзя
-        </div>
       )}
     </div>
   );
@@ -517,8 +512,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
   };
 
   const deleteParcel = async (p) => {
-    // подстраховка: удаляем только «Ожидается»
-    const { error } = await db.from("parcels").delete().eq("id", p.id).eq("status", 0);
+    const { error } = await db.from("parcels").delete().eq("id", p.id);
     if (error) { alert("Не удалось удалить: " + error.message); return; }
     setSel(null);
     load();
@@ -536,8 +530,10 @@ function ClientApp({ session, profile, settings, onLogout }) {
 
   const copyAddr = () => {
     const d = (profile.phone || "").replace(/\D/g, "");
-    const myPhone = d.length === 11 ? d.slice(1) : d; // 77073088553 → 7073088553
-    const txt = `${settings.china_recipient}-${profile.client_code}\n${settings.china_phone}\n${settings.china_region}\n${settings.china_street}-(${profile.client_code}) ${myPhone}`;
+    // 77007676067 → 87007676067 (казахстанский формат через 8)
+    const myPhone = d ? "8" + (d.length === 11 ? d.slice(1) : d) : "";
+    // без дефисов и скобок — иначе Taobao/1688 выбрасывает код при распознавании
+    const txt = `${settings.china_recipient}${profile.client_code}\n${settings.china_phone}\n${settings.china_region}\n${settings.china_street}${profile.client_code} ${myPhone}`;
     if (navigator.clipboard && navigator.clipboard.writeText) {
       navigator.clipboard.writeText(txt);
     } else {
@@ -686,13 +682,13 @@ function ClientApp({ session, profile, settings, onLogout }) {
               </div>
               <div className="space-y-3">
                 {[
-                  ["收货人 (Получатель)", `${settings.china_recipient}-${profile.client_code}`],
+                  ["收货人 (Получатель)", `${settings.china_recipient}${profile.client_code}`],
                   ["电话 (Телефон)", settings.china_phone],
                   ["地区 (Регион)", settings.china_region],
                   ["详细地址 (Адрес)", (() => {
                     const d = (profile.phone || "").replace(/\D/g, "");
-                    const myPhone = d.length === 11 ? d.slice(1) : d;
-                    return `${settings.china_street}-(${profile.client_code}) ${myPhone}`;
+                    const myPhone = d ? "8" + (d.length === 11 ? d.slice(1) : d) : "";
+                    return `${settings.china_street}${profile.client_code} ${myPhone}`;
                   })()]
                 ].map(([k, v]) => (
                   <div key={k}>
@@ -984,6 +980,13 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     load();
   };
 
+  const adminDelete = async (p) => {
+    if (!confirm(`Удалить посылку ${p.track_number}?\n\nОна исчезнет и у клиента ${p.profiles?.client_code || ""}. Это действие нельзя отменить.`)) return;
+    const { error } = await db.from("parcels").delete().eq("id", p.id);
+    if (error) { alert("Не удалось удалить: " + error.message); return; }
+    load();
+  };
+
   // ─── Массовое сканирование: камера не закрывается, статусы летят один за другим ──
   const feedbackKey = useRef(0);
   const showFeedback = (ok, text) => {
@@ -1171,10 +1174,20 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                   <span style={{ fontFamily: F.mono, fontSize: 13, fontWeight: 600, color: C.ink }}>
                     {p.track_number}
                   </span>
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded"
-                    style={{ background: C.transit + "15", color: C.transit, fontFamily: F.mono }}>
-                    {p.profiles?.client_code || "—"}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded"
+                      style={{ background: C.transit + "15", color: C.transit, fontFamily: F.mono }}>
+                      {p.profiles?.client_code || "—"}
+                    </span>
+                    <button
+                      onClick={() => adminDelete(p)}
+                      className="w-7 h-7 rounded-lg flex items-center justify-center text-sm transition-all active:scale-90"
+                      style={{ background: C.stamp + "12", color: C.stamp }}
+                      title="Удалить посылку"
+                    >
+                      🗑
+                    </button>
+                  </div>
                 </div>
                 {p.title && (
                   <div className="text-xs mb-1 truncate" style={{ color: C.inkSoft, fontFamily: F.body }}>
