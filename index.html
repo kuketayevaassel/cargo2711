@@ -951,12 +951,15 @@ function ClientApp({ session, profile, settings, onLogout }) {
 
 // ─── Фильтры статусов в админке ─────────────────────────────────
 const ADMIN_FILTERS = [
-  { id: "all",     label: "Все",           test: () => true },
-  { id: "waiting", label: "⏳ Ожидаются",   test: p => p.status === 0 },
-  { id: "transit", label: "🚚 В пути",      test: p => p.status >= 1 && p.status <= 3 },
-  { id: "ready",   label: "✅ К выдаче",    test: p => p.status === 4 },
-  { id: "done",    label: "🎯 Выданы",      test: p => p.status === 5 },
-  { id: "unpaid",  label: "💰 Не оплачено", test: p => !p.paid && p.weight > 0 },
+  { id: "all",     label: "Все посылки",            test: () => true },
+  { id: "s0",      label: "⏳ Ожидается",            test: p => p.status === 0 },
+  { id: "s1",      label: "📦 Принят на складе",     test: p => p.status === 1 },
+  { id: "s2",      label: "✈️ Отправлен из Китая",   test: p => p.status === 2 },
+  { id: "s3",      label: "📍 Прибыл в Казахстан",   test: p => p.status === 3 },
+  { id: "s4",      label: "✅ Готов к выдаче",       test: p => p.status === 4 },
+  { id: "s5",      label: "🎯 Выдан",                test: p => p.status === 5 },
+  { id: "transit", label: "🚚 Все в пути (склад → КЗ)", test: p => p.status >= 1 && p.status <= 3 },
+  { id: "unpaid",  label: "💰 Не оплачено",          test: p => !p.paid && p.weight > 0 },
 ];
 
 // ─── Экспорт в Excel (CSV с BOM — открывается в Excel по двойному клику) ───
@@ -1293,6 +1296,23 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     load();
   };
 
+  // установить любой статус напрямую из выпадающего списка
+  const setStatusDirect = async (p, newStatus) => {
+    const ns = Number(newStatus);
+    if (ns === p.status) return;
+    const dates = [...(p.status_dates || [null, null, null, null, null, null])];
+    if (ns > p.status) {
+      // вперёд — проставляем даты всем пройденным этапам
+      for (let i = p.status + 1; i <= ns; i++) if (!dates[i]) dates[i] = todayStr();
+    } else {
+      // назад — стираем даты отменённых этапов
+      for (let i = ns + 1; i <= 5; i++) dates[i] = null;
+    }
+    const { error } = await db.from("parcels").update({ status: ns, status_dates: dates }).eq("id", p.id);
+    if (error) { alert("Не удалось изменить статус: " + error.message); return; }
+    load();
+  };
+
   // откат на шаг назад — если статус проставили по ошибке
   const rollback = async (p) => {
     if (p.status <= 0) return;
@@ -1566,27 +1586,30 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               </div>
             )}
 
-            {/* Фильтры по статусу */}
-            <div className="flex gap-2 mb-3 overflow-x-auto pb-1" style={{ scrollbarWidth: "none" }}>
-              {ADMIN_FILTERS.map(f => {
-                const cnt = f.id === "all" ? parcels.length : parcels.filter(f.test).length;
-                const active = statusFilter === f.id;
-                return (
-                  <button
-                    key={f.id}
-                    onClick={() => setStatusFilter(f.id)}
-                    className="flex-shrink-0 text-xs font-bold px-3 py-1.5 rounded-full transition-all active:scale-95"
-                    style={{
-                      background: active ? C.ink : C.card,
-                      color: active ? "#fff" : C.inkSoft,
-                      border: `1.5px solid ${active ? C.ink : C.line}`,
-                      fontFamily: F.body
-                    }}
-                  >
-                    {f.label} <span style={{ fontFamily: F.mono, opacity: 0.75 }}>{cnt}</span>
-                  </button>
-                );
-              })}
+            {/* Отбор по статусу — выпадающий список */}
+            <div className="relative mb-3">
+              <select
+                value={statusFilter}
+                onChange={e => setStatusFilter(e.target.value)}
+                className="w-full rounded-xl px-4 py-3 pr-10 outline-none text-sm font-semibold appearance-none"
+                style={{
+                  border: `1.5px solid ${statusFilter === "all" ? C.line : C.ink}`,
+                  background: statusFilter === "all" ? C.card : C.ink,
+                  color: statusFilter === "all" ? C.ink : "#fff",
+                  fontFamily: F.body
+                }}
+              >
+                {ADMIN_FILTERS.map(f => {
+                  const cnt = parcels.filter(p => !clientFilter || p.client_id === clientFilter.id).filter(f.test).length;
+                  return (
+                    <option key={f.id} value={f.id} style={{ color: "#14202E", background: "#fff" }}>
+                      {f.label} ({cnt})
+                    </option>
+                  );
+                })}
+              </select>
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs"
+                style={{ color: statusFilter === "all" ? C.inkSoft : "#fff" }}>▼</span>
             </div>
 
             <div className="text-xs mb-3 text-center" style={{ color: C.inkSoft, fontFamily: F.body }}>
@@ -1658,10 +1681,28 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                   </div>
                 )}
                 <div className="flex items-center gap-2 mb-2">
-                  <span className="text-xs font-semibold px-2 py-0.5 rounded-full"
-                    style={{ background: STATUSES[p.status].color + "18", color: STATUSES[p.status].color, fontFamily: F.body }}>
-                    {STATUSES[p.status].icon} {STATUSES[p.status].label}
-                  </span>
+                  <div className="relative">
+                    <select
+                      value={p.status}
+                      onChange={e => setStatusDirect(p, e.target.value)}
+                      className="text-xs font-semibold pl-2.5 pr-6 py-1 rounded-full appearance-none outline-none cursor-pointer"
+                      style={{
+                        background: STATUSES[p.status].color + "18",
+                        color: STATUSES[p.status].color,
+                        fontFamily: F.body,
+                        border: `1px solid ${STATUSES[p.status].color}33`
+                      }}
+                      title="Выбрать статус"
+                    >
+                      {STATUSES.map((s, i) => (
+                        <option key={i} value={i} style={{ color: "#14202E", background: "#fff" }}>
+                          {s.icon} {s.label}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none"
+                      style={{ fontSize: 8, color: STATUSES[p.status].color }}>▼</span>
+                  </div>
                   {p.paid && <span className="text-xs" style={{ color: C.ready }}>✅</span>}
                 </div>
                 <div className="flex items-center gap-2 mb-2 flex-wrap">
