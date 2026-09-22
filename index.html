@@ -1213,6 +1213,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [clientFilter, setClientFilter] = useState(null); // {id, code, name}
   const [scanFeedback, setScanFeedback] = useState(null);
   const [scanCount, setScanCount] = useState(0);
+  const [lastScanned, setLastScanned] = useState(null); // для отката последнего скана
   const [exportFrom, setExportFrom] = useState("");
   const [exportTo, setExportTo] = useState("");
   // добавление посылки админом
@@ -1292,6 +1293,18 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     load();
   };
 
+  // откат на шаг назад — если статус проставили по ошибке
+  const rollback = async (p) => {
+    if (p.status <= 0) return;
+    const prev = p.status - 1;
+    if (!confirm(`Вернуть ${p.track_number} назад?\n\n${STATUSES[p.status].label} → ${STATUSES[prev].label}`)) return;
+    const dates = [...(p.status_dates || [null, null, null, null, null, null])];
+    dates[p.status] = null; // убираем дату ошибочного статуса
+    const { error } = await db.from("parcels").update({ status: prev, status_dates: dates }).eq("id", p.id);
+    if (error) { alert("Не удалось откатить: " + error.message); return; }
+    load();
+  };
+
   const setWeight = async (p, val) => {
     const w = parseFloat(val) || 0;
     await db.from("parcels").update({ weight: w }).eq("id", p.id);
@@ -1350,6 +1363,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
       if (error) throw error;
 
       showFeedback(true, `✅ ${shortTrack(track)} → ${STATUSES[nextStatus].label}`);
+      setLastScanned({ id: found.id, track, from: found.status, dates: found.status_dates || null });
       setScanCount(n => n + 1);
       await load();
 
@@ -1361,7 +1375,21 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const openScanner = () => {
     setScanFeedback(null);
     setScanCount(0);
+    setLastScanned(null);
     setShowScanner(true);
+  };
+
+  // отменить последнее сканирование — вернуть статус, каким он был до скана
+  const undoLastScan = async () => {
+    if (!lastScanned) return;
+    const { error } = await db.from("parcels")
+      .update({ status: lastScanned.from, status_dates: lastScanned.dates })
+      .eq("id", lastScanned.id);
+    if (error) { alert("Не удалось отменить: " + error.message); return; }
+    showFeedback(true, `↩ ${shortTrack(lastScanned.track)} → ${STATUSES[lastScanned.from].label}`);
+    setLastScanned(null);
+    setScanCount(n => Math.max(0, n - 1));
+    await load();
   };
 
   // ─── Добавление посылки админом за клиента ────────────────────
@@ -1574,6 +1602,13 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                   fontFamily: F.body
                 }}>
                 {scanFeedback.text}
+                {scanFeedback.ok && lastScanned && (
+                  <button onClick={undoLastScan}
+                    className="block mx-auto mt-2 text-xs font-bold px-3 py-1.5 rounded-lg transition-all active:scale-95"
+                    style={{ background: C.card, color: C.inkSoft, border: `1px solid ${C.line}`, fontFamily: F.body }}>
+                    ↩ Отменить: {shortTrack(lastScanned.track)}
+                  </button>
+                )}
               </div>
             )}
 
@@ -1644,14 +1679,24 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                     {p.paid ? "Оплачено" : "Не оплачено"}
                   </button>
                 </div>
-                {p.status < 5 ? (
-                  <button onClick={() => advance(p)} className="w-full text-xs font-bold py-2 rounded-lg text-white transition-all active:scale-[0.98]"
-                    style={{ background: C.transit, fontFamily: F.body }}>
-                    → {STATUSES[p.status + 1].label}
-                  </button>
-                ) : (
-                  <div className="text-xs font-bold text-center" style={{ color: C.stamp, fontFamily: F.body }}>✔ Завершено</div>
-                )}
+                <div className="flex gap-2">
+                  {p.status > 0 && (
+                    <button onClick={() => rollback(p)}
+                      className="text-xs font-bold px-3 py-2 rounded-lg transition-all active:scale-95 flex-shrink-0"
+                      style={{ background: C.line + "44", color: C.inkSoft, fontFamily: F.body }}
+                      title={`Вернуть на «${STATUSES[p.status - 1].label}»`}>
+                      ↩
+                    </button>
+                  )}
+                  {p.status < 5 ? (
+                    <button onClick={() => advance(p)} className="flex-1 text-xs font-bold py-2 rounded-lg text-white transition-all active:scale-[0.98]"
+                      style={{ background: C.transit, fontFamily: F.body }}>
+                      → {STATUSES[p.status + 1].label}
+                    </button>
+                  ) : (
+                    <div className="flex-1 text-xs font-bold text-center py-2" style={{ color: C.stamp, fontFamily: F.body }}>✔ Завершено</div>
+                  )}
+                </div>
               </div>
             ))}
           </>
