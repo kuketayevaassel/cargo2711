@@ -1204,6 +1204,244 @@ function NewsAdmin() {
   );
 }
 
+// ─── Отчёты ─────────────────────────────────────────────────────
+// «dd.mm.yyyy» → Date (для сравнения с диапазоном дат)
+function parseRuDate(s) {
+  if (!s) return null;
+  const m = String(s).match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  if (!m) return null;
+  return new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+}
+
+function ReportsAdmin({ parcels, rate, clients }) {
+  const [stage, setStage] = useState(1);          // какой этап смотрим
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [client, setClient] = useState("");       // id клиента или ""
+  const [onlyHere, setOnlyHere] = useState(false); // только те, кто сейчас на этом этапе
+
+  const fromD = from ? new Date(from + "T00:00:00") : null;
+  const toD = to ? new Date(to + "T23:59:59") : null;
+
+  const rows = parcels.filter(p => {
+    const dates = p.status_dates || [];
+    const stageDate = parseRuDate(dates[stage]);
+    // этап пройден, если есть его дата ИЛИ текущий статус не ниже этапа
+    const passed = !!stageDate || p.status >= stage;
+    if (!passed) return false;
+    if (onlyHere && p.status !== stage) return false;
+    if (client && p.client_id !== client) return false;
+    if (fromD || toD) {
+      if (!stageDate) return false;               // без даты в диапазон не попадает
+      if (fromD && stageDate < fromD) return false;
+      if (toD && stageDate > toD) return false;
+    }
+    return true;
+  });
+
+  const totalWeight = rows.reduce((s, p) => s + (Number(p.weight) || 0), 0);
+  const totalSum = rows.reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+  const unpaidSum = rows.filter(p => !p.paid).reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+  const noDate = rows.filter(p => !(p.status_dates || [])[stage]).length;
+
+  const exportReport = () => {
+    if (rows.length === 0) { alert("В отчёте нет строк"); return; }
+    const esc = v => {
+      const s = String(v == null ? "" : v);
+      return /[";\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    const num = v => String(v).replace(".", ",");
+    const header = ["Трек-номер", "Описание", "Код клиента", "Клиент", `Дата этапа «${STATUSES[stage].label}»`, "Текущий статус", "Вес, кг", "Сумма, тг", "Оплачено"];
+    const lines = [header.join(";")];
+    rows.forEach(p => {
+      lines.push([
+        esc(p.track_number),
+        esc(p.title || ""),
+        esc(p.profiles?.client_code || ""),
+        esc(p.profiles?.full_name || ""),
+        (p.status_dates || [])[stage] || "нет даты",
+        esc(STATUSES[p.status].label),
+        num((Number(p.weight) || 0).toFixed(2)),
+        priceKZT(p.weight, rate),
+        p.paid ? "Да" : "Нет"
+      ].join(";"));
+    });
+    lines.push("");
+    lines.push(["ИТОГО", `Посылок: ${rows.length}`, "", "", "", "", num(totalWeight.toFixed(2)), totalSum, `Не оплачено: ${unpaidSum}`].join(";"));
+
+    const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `отчет_${STATUSES[stage].label}_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const quickRange = (days) => {
+    const t = new Date();
+    const f = new Date();
+    f.setDate(f.getDate() - days);
+    const iso = d => d.toISOString().slice(0, 10);
+    setFrom(iso(f)); setTo(iso(t));
+  };
+
+  return (
+    <>
+      {/* Панель отбора */}
+      <div className="rounded-2xl p-5 mb-4 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+        <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>📊 Отчёт по этапу</div>
+        <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+          Показывает все посылки, прошедшие выбранный этап, с датой его присвоения.
+        </div>
+
+        <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Этап</label>
+        <div className="relative mb-3">
+          <select value={stage} onChange={e => setStage(Number(e.target.value))}
+            className="w-full rounded-xl px-4 py-2.5 pr-10 outline-none text-sm font-semibold appearance-none"
+            style={{ border: `1.5px solid ${C.line}`, background: C.card, color: C.ink, fontFamily: F.body }}>
+            {STATUSES.map((s, i) => (
+              <option key={i} value={i} style={{ color: "#14202E", background: "#fff" }}>{s.icon} {s.label}</option>
+            ))}
+          </select>
+          <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs" style={{ color: C.inkSoft }}>▼</span>
+        </div>
+
+        <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Дата присвоения этапа</label>
+        <div className="flex gap-2 mb-2">
+          <input type="date" value={from} onChange={e => setFrom(e.target.value)}
+            className="flex-1 rounded-xl px-3 py-2.5 outline-none text-sm"
+            style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+          <input type="date" value={to} onChange={e => setTo(e.target.value)}
+            className="flex-1 rounded-xl px-3 py-2.5 outline-none text-sm"
+            style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+        </div>
+        <div className="flex gap-2 mb-3 flex-wrap">
+          {[["Сегодня", 0], ["7 дней", 7], ["30 дней", 30]].map(([lbl, d]) => (
+            <button key={lbl} onClick={() => quickRange(d)}
+              className="text-xs font-bold px-3 py-1.5 rounded-lg transition-all active:scale-95"
+              style={{ background: C.line + "33", color: C.inkSoft, fontFamily: F.body }}>
+              {lbl}
+            </button>
+          ))}
+          <button onClick={() => { setFrom(""); setTo(""); }}
+            className="text-xs font-bold px-3 py-1.5 rounded-lg transition-all active:scale-95"
+            style={{ background: C.line + "33", color: C.inkSoft, fontFamily: F.body }}>
+            Все даты
+          </button>
+        </div>
+
+        <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Клиент</label>
+        <div className="relative mb-3">
+          <select value={client} onChange={e => setClient(e.target.value)}
+            className="w-full rounded-xl px-4 py-2.5 pr-10 outline-none text-sm appearance-none"
+            style={{ border: `1.5px solid ${C.line}`, background: C.card, color: C.ink, fontFamily: F.body }}>
+            <option value="">Все клиенты</option>
+            {clients.map(c => (
+              <option key={c.id} value={c.id} style={{ color: "#14202E", background: "#fff" }}>
+                {c.client_code} — {c.full_name || "—"}
+              </option>
+            ))}
+          </select>
+          <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs" style={{ color: C.inkSoft }}>▼</span>
+        </div>
+
+        <button onClick={() => setOnlyHere(!onlyHere)}
+          className="w-full text-xs font-bold py-2.5 rounded-lg transition-all active:scale-95 mb-3"
+          style={{
+            background: onlyHere ? C.ink : C.line + "22",
+            color: onlyHere ? "#fff" : C.inkSoft,
+            border: `1.5px solid ${onlyHere ? C.ink : C.line}`,
+            fontFamily: F.body
+          }}>
+          {onlyHere ? "☑" : "☐"} Только застрявшие на этом этапе
+        </button>
+
+        <button onClick={exportReport}
+          className="w-full py-3 rounded-xl font-bold text-white transition-all active:scale-[0.98]"
+          style={{ background: C.transit, fontFamily: F.body }}>
+          ⬇ Выгрузить отчёт в Excel
+        </button>
+      </div>
+
+      {/* Итоги */}
+      <div className="grid grid-cols-2 gap-2 mb-4">
+        {[
+          ["Посылок", rows.length],
+          ["Вес", totalWeight.toFixed(1) + " кг"],
+          ["Сумма", totalSum.toLocaleString("ru-RU") + " ₸"],
+          ["Не оплачено", unpaidSum.toLocaleString("ru-RU") + " ₸"]
+        ].map(([k, v], i) => (
+          <div key={k} className="rounded-xl px-3 py-2.5" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+            <div className="text-xs" style={{ color: C.inkSoft, fontFamily: F.body }}>{k}</div>
+            <div className="text-sm font-bold" style={{ color: i === 3 && unpaidSum > 0 ? C.stamp : C.ink, fontFamily: F.mono }}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      {noDate > 0 && (
+        <div className="rounded-xl px-4 py-3 mb-3 text-xs" style={{ background: C.gold + "15", color: C.ink, border: `1px solid ${C.gold}44`, fontFamily: F.body }}>
+          ⚠️ У {noDate} посылок этап пройден, но дата не записана — они были проведены до внедрения дат или статус ставили вручную.
+        </div>
+      )}
+
+      {/* Таблица */}
+      {rows.length === 0 ? (
+        <div className="text-center py-12">
+          <div className="text-4xl mb-3">🔍</div>
+          <div className="text-sm" style={{ color: C.inkSoft, fontFamily: F.body }}>
+            Ничего не найдено под эти условия
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-xl overflow-hidden mb-4" style={{ border: `1px solid ${C.line}` }}>
+          <div className="overflow-x-auto">
+            <table className="w-full" style={{ borderCollapse: "collapse", minWidth: 560 }}>
+              <thead>
+                <tr style={{ background: C.ink }}>
+                  {["Трек", "Товар", "Клиент", "Дата этапа", "Статус сейчас", "Вес", "Сумма"].map(h => (
+                    <th key={h} className="text-left px-3 py-2 text-xs font-semibold whitespace-nowrap"
+                      style={{ color: "#fff", fontFamily: F.body }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((p, i) => (
+                  <tr key={p.id} style={{ background: i % 2 ? C.paper : C.card, borderTop: `1px solid ${C.line}` }}>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap" style={{ fontFamily: F.mono, color: C.ink }}>
+                      {p.track_number}
+                    </td>
+                    <td className="px-3 py-2 text-xs" style={{ fontFamily: F.body, color: C.inkSoft, maxWidth: 120 }}>
+                      {p.title || "—"}
+                    </td>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap" style={{ fontFamily: F.mono, color: C.transit }}>
+                      {p.profiles?.client_code || "—"}
+                    </td>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap"
+                      style={{ fontFamily: F.mono, color: (p.status_dates || [])[stage] ? C.ink : C.gold }}>
+                      {(p.status_dates || [])[stage] || "нет даты"}
+                    </td>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap" style={{ fontFamily: F.body, color: STATUSES[p.status].color }}>
+                      {STATUSES[p.status].icon} {STATUSES[p.status].label}
+                    </td>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap" style={{ fontFamily: F.mono, color: C.ink }}>
+                      {p.weight > 0 ? Number(p.weight).toFixed(2) : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap font-bold"
+                      style={{ fontFamily: F.mono, color: p.paid ? C.ready : C.stamp }}>
+                      {p.weight > 0 ? priceKZT(p.weight, rate).toLocaleString("ru-RU") : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ─── Админка ─────────────────────────────────────────────────────
 function AdminApp({ settings, reloadSettings, onLogout }) {
   const [tab, setTab] = useState("parcels");
@@ -1804,6 +2042,8 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
           </>
         )}
 
+        {tab === "reports" && <ReportsAdmin parcels={parcels} rate={rate} clients={clients} />}
+
         {tab === "news" && <NewsAdmin />}
 
         {tab === "settings" && (
@@ -1849,6 +2089,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
         {[
           ["parcels", "📦", "Посылки"],
           ["clients", "👤", "Клиенты"],
+          ["reports", "📊", "Отчёты"],
           ["news", "📣", "Новости"],
           ["settings", "⚙️", "Настройки"]
         ].map(([id, icon, label]) => (
@@ -1859,7 +2100,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               borderTop: tab === id ? `3px solid ${C.stamp}` : "3px solid transparent"
             }}>
             <div className="text-lg">{icon}</div>
-            <div className="text-xs font-semibold">{label}</div>
+            <div style={{ fontSize: 10, fontWeight: 600 }}>{label}</div>
           </button>
         ))}
       </div>
