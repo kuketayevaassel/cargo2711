@@ -20,6 +20,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <style>
   * { -webkit-tap-highlight-color: transparent; }
   body { margin: 0; background: #14202E; overflow-x: hidden; }
@@ -1442,6 +1443,242 @@ function ReportsAdmin({ parcels, rate, clients }) {
   );
 }
 
+// ─── Импорт списка из Excel (сверка отправки со склада) ─────────
+function ImportAdmin({ parcels, onDone }) {
+  const [stage, setStage] = useState(2);     // какой статус присвоить (по умолчанию «Отправлен из Китая»)
+  const [fileName, setFileName] = useState("");
+  const [tracks, setTracks] = useState([]);  // распознанные из файла
+  const [busy, setBusy] = useState(false);
+  const [applied, setApplied] = useState(null);
+  const fileRef = useRef(null);
+
+  // Вытащить трек-номера из любой структуры файла: берём все непустые ячейки
+  const readFile = (file) => {
+    setApplied(null);
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
+        const found = [];
+        wb.SheetNames.forEach(name => {
+          const ws = wb.Sheets[name];
+          Object.keys(ws).forEach(addr => {
+            if (addr[0] === "!") return;            // служебные ключи
+            const cell = ws[addr];
+            let raw;
+            if (cell.t === "n") {
+              // число: без экспоненты, иначе 4.657e14 вместо 465705493676393
+              raw = typeof cell.v === "number" ? cell.v.toFixed(0) : String(cell.v);
+            } else {
+              raw = String(cell.w != null ? cell.w : cell.v);
+            }
+            const t = raw.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+            if (t.length >= 8 && /\d/.test(t)) found.push(t);
+          });
+        });
+        const uniq = [...new Set(found)];
+        setTracks(uniq);
+        setFileName(file.name);
+      } catch (err) {
+        alert("Не удалось прочитать файл: " + err.message);
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  // Разбор на группы
+  const byTrack = {};
+  parcels.forEach(p => { byTrack[p.track_number] = p; });
+
+  const toUpdate = [];   // есть в базе, статус ниже выбранного → обновим
+  const already = [];    // уже на этом этапе или дальше
+  const missing = [];    // нет в базе — клиент не внёс трек
+
+  tracks.forEach(t => {
+    const p = byTrack[t];
+    if (!p) missing.push(t);
+    else if (p.status >= stage) already.push(p);
+    else toUpdate.push(p);
+  });
+
+  const apply = async () => {
+    if (toUpdate.length === 0) return;
+    if (!confirm(`Присвоить статус «${STATUSES[stage].label}» для ${toUpdate.length} посылок?`)) return;
+    setBusy(true);
+    let ok = 0, fail = 0;
+    for (const p of toUpdate) {
+      const dates = [...(p.status_dates || [null, null, null, null, null, null])];
+      for (let i = p.status + 1; i <= stage; i++) if (!dates[i]) dates[i] = todayStr();
+      const { error } = await db.from("parcels").update({ status: stage, status_dates: dates }).eq("id", p.id);
+      error ? fail++ : ok++;
+    }
+    setBusy(false);
+    setApplied({ ok, fail });
+    if (onDone) await onDone();
+  };
+
+  const copyMissing = () => {
+    const txt = missing.join("\n");
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(txt);
+    else {
+      const ta = document.createElement("textarea");
+      ta.value = txt; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); document.body.removeChild(ta);
+    }
+    alert(`Скопировано ${missing.length} трек-номеров`);
+  };
+
+  const exportMissing = () => {
+    const lines = ["Трек-номер (нет в базе)"].concat(missing);
+    const blob = new Blob(["\uFEFF" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `не_найдены_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const reset = () => {
+    setTracks([]); setFileName(""); setApplied(null);
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  return (
+    <>
+      <div className="rounded-2xl p-5 mb-4 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+        <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>📥 Импорт списка из Excel</div>
+        <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+          Загрузите файл от китайского склада — приложение сверит треки с базой, проставит статус найденным и покажет те, которых у нас нет.
+        </div>
+
+        <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Какой статус присвоить</label>
+        <div className="relative mb-3">
+          <select value={stage} onChange={e => { setStage(Number(e.target.value)); setApplied(null); }}
+            className="w-full rounded-xl px-4 py-2.5 pr-10 outline-none text-sm font-semibold appearance-none"
+            style={{ border: `1.5px solid ${C.line}`, background: C.card, color: C.ink, fontFamily: F.body }}>
+            {STATUSES.map((s, i) => (
+              <option key={i} value={i} style={{ color: "#14202E", background: "#fff" }}>{s.icon} {s.label}</option>
+            ))}
+          </select>
+          <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs" style={{ color: C.inkSoft }}>▼</span>
+        </div>
+
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          onChange={e => e.target.files?.[0] && readFile(e.target.files[0])}
+          className="w-full text-xs mb-1"
+          style={{ fontFamily: F.body, color: C.inkSoft }}
+        />
+        {fileName && (
+          <div className="text-xs mb-2" style={{ color: C.ink, fontFamily: F.body }}>
+            📄 {fileName} — распознано треков: <b>{tracks.length}</b>
+            <button onClick={reset} className="ml-2 underline" style={{ color: C.stamp }}>сбросить</button>
+          </div>
+        )}
+      </div>
+
+      {tracks.length > 0 && (
+        <>
+          {/* Сводка */}
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            {[
+              ["К обновлению", toUpdate.length, C.transit],
+              ["Уже в статусе", already.length, C.inkSoft],
+              ["Нет в базе", missing.length, missing.length ? C.stamp : C.ready]
+            ].map(([k, v, col]) => (
+              <div key={k} className="rounded-xl px-3 py-2.5 text-center" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+                <div className="text-lg font-bold" style={{ color: col, fontFamily: F.mono }}>{v}</div>
+                <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>{k}</div>
+              </div>
+            ))}
+          </div>
+
+          {applied && (
+            <div className="rounded-xl px-4 py-3 mb-4 text-sm font-bold text-center"
+              style={{ background: C.ready + "18", color: C.ready, border: `1.5px solid ${C.ready}33`, fontFamily: F.body }}>
+              ✅ Обновлено: {applied.ok}{applied.fail ? ` · Ошибок: ${applied.fail}` : ""}
+            </div>
+          )}
+
+          {toUpdate.length > 0 && !applied && (
+            <button onClick={apply} disabled={busy}
+              className="w-full py-3 rounded-xl font-bold text-white mb-4 transition-all active:scale-[0.98]"
+              style={{ background: C.stamp, fontFamily: F.body, opacity: busy ? 0.6 : 1 }}>
+              {busy ? "Обновление…" : `✔ Присвоить «${STATUSES[stage].label}» — ${toUpdate.length} шт.`}
+            </button>
+          )}
+
+          {/* Нет в базе */}
+          {missing.length > 0 && (
+            <div className="rounded-2xl p-4 mb-4" style={{ background: C.card, border: `1.5px solid ${C.stamp}44` }}>
+              <div className="text-sm font-bold mb-1" style={{ color: C.stamp, fontFamily: F.body }}>
+                ❗ Нет в базе — {missing.length} шт.
+              </div>
+              <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                Эти посылки уехали из Китая, но ни один клиент их не внёс. Найдите владельцев по коду на коробке и добавьте вручную.
+              </div>
+              <div className="rounded-xl p-3 mb-3 max-h-56 overflow-y-auto" style={{ background: C.paper }}>
+                {missing.map(t => (
+                  <div key={t} className="text-xs py-0.5" style={{ fontFamily: F.mono, color: C.ink }}>{t}</div>
+                ))}
+              </div>
+              <div className="flex gap-2">
+                <button onClick={copyMissing}
+                  className="flex-1 text-xs font-bold py-2.5 rounded-lg transition-all active:scale-95"
+                  style={{ background: C.line + "33", color: C.inkSoft, fontFamily: F.body }}>
+                  📋 Скопировать
+                </button>
+                <button onClick={exportMissing}
+                  className="flex-1 text-xs font-bold py-2.5 rounded-lg transition-all active:scale-95"
+                  style={{ background: C.transit + "15", color: C.transit, fontFamily: F.body }}>
+                  ⬇ В Excel
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* К обновлению */}
+          {toUpdate.length > 0 && (
+            <div className="rounded-2xl p-4 mb-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+              <div className="text-sm font-bold mb-2" style={{ color: C.transit, fontFamily: F.body }}>
+                🔄 Будут обновлены — {toUpdate.length} шт.
+              </div>
+              <div className="max-h-56 overflow-y-auto">
+                {toUpdate.map(p => (
+                  <div key={p.id} className="flex items-center justify-between py-1 text-xs">
+                    <span style={{ fontFamily: F.mono, color: C.ink }}>{p.track_number}</span>
+                    <span style={{ fontFamily: F.mono, color: C.transit }}>{p.profiles?.client_code || "—"}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Уже в статусе */}
+          {already.length > 0 && (
+            <div className="rounded-2xl p-4 mb-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+              <div className="text-sm font-bold mb-2" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                ⏭ Уже на этом этапе или дальше — {already.length} шт.
+              </div>
+              <div className="max-h-40 overflow-y-auto">
+                {already.map(p => (
+                  <div key={p.id} className="flex items-center justify-between py-1 text-xs">
+                    <span style={{ fontFamily: F.mono, color: C.inkSoft }}>{p.track_number}</span>
+                    <span style={{ fontFamily: F.body, color: STATUSES[p.status].color }}>{STATUSES[p.status].label}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </>
+  );
+}
+
 // ─── Админка ─────────────────────────────────────────────────────
 function AdminApp({ settings, reloadSettings, onLogout }) {
   const [tab, setTab] = useState("parcels");
@@ -1455,6 +1692,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [scanFeedback, setScanFeedback] = useState(null);
   const [scanCount, setScanCount] = useState(0);
   const [lastScanned, setLastScanned] = useState(null); // для отката последнего скана
+  const [reportMode, setReportMode] = useState("report"); // report | import
   const [exportFrom, setExportFrom] = useState("");
   const [exportTo, setExportTo] = useState("");
   // добавление посылки админом
@@ -2042,7 +2280,27 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
           </>
         )}
 
-        {tab === "reports" && <ReportsAdmin parcels={parcels} rate={rate} clients={clients} />}
+        {tab === "reports" && (
+          <>
+            <div className="flex gap-2 mb-4">
+              {[["report", "📊 Отчёт"], ["import", "📥 Импорт Excel"]].map(([id, label]) => (
+                <button key={id} onClick={() => setReportMode(id)}
+                  className="flex-1 text-xs font-bold py-2.5 rounded-xl transition-all active:scale-95"
+                  style={{
+                    background: reportMode === id ? C.ink : C.card,
+                    color: reportMode === id ? "#fff" : C.inkSoft,
+                    border: `1.5px solid ${reportMode === id ? C.ink : C.line}`,
+                    fontFamily: F.body
+                  }}>
+                  {label}
+                </button>
+              ))}
+            </div>
+            {reportMode === "report"
+              ? <ReportsAdmin parcels={parcels} rate={rate} clients={clients} />
+              : <ImportAdmin parcels={parcels} onDone={load} />}
+          </>
+        )}
 
         {tab === "news" && <NewsAdmin />}
 
