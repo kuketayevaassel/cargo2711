@@ -493,6 +493,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
   const [newTitle, setNewTitle] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [addErr, setAddErr] = useState("");
+  const [claimInfo, setClaimInfo] = useState("");
   const [loading, setLoading] = useState(true);
   const [showScanner, setShowScanner] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -551,14 +552,22 @@ function ClientApp({ session, profile, settings, onLogout }) {
   const addTrack = async () => {
     const t = newTrack.trim().toUpperCase();
     if (t.length < 6) { setAddErr("Трек-номер слишком короткий (минимум 6 символов)"); return; }
-    const exists = parcels.some(p => p.track_number === t);
-    if (exists) { setAddErr("Этот трек-номер уже добавлен"); return; }
-    const { error } = await db.from("parcels").insert({
-      client_id: session.user.id,
-      track_number: t,
-      title: newTitle.trim() || null
+
+    const { data, error } = await db.rpc("claim_or_create_parcel", {
+      p_track: t,
+      p_title: newTitle.trim() || null
     });
+
     if (error) { setAddErr("Не удалось добавить: " + error.message); return; }
+    if (!data?.ok) { setAddErr(data?.message || "Не удалось добавить"); return; }
+
+    // посылка уже была на складе — покажем клиенту, на каком она этапе
+    if (data.code === "claimed") {
+      const st = STATUSES[data.status] || STATUSES[0];
+      setClaimInfo(`${st.icon} Эта посылка уже у нас: «${st.label}»`);
+      setTimeout(() => setClaimInfo(""), 5000);
+    }
+
     closeAdd();
     load();
   };
@@ -683,6 +692,13 @@ function ClientApp({ session, profile, settings, onLogout }) {
                   +
                 </button>
               </div>
+
+              {claimInfo && (
+                <div className="rounded-xl px-4 py-3 mb-3 text-sm font-bold text-center slide-up"
+                  style={{ background: C.ready + "18", color: C.ready, border: `1.5px solid ${C.ready}33`, fontFamily: F.body }}>
+                  {claimInfo}
+                </div>
+              )}
 
               <div className="mb-4">
                 <input
@@ -960,6 +976,7 @@ const ADMIN_FILTERS = [
   { id: "s4",      label: "✅ Готов к выдаче",       test: p => p.status === 4 },
   { id: "s5",      label: "🎯 Выдан",                test: p => p.status === 5 },
   { id: "transit", label: "🚚 Все в пути (склад → КЗ)", test: p => p.status >= 1 && p.status <= 3 },
+  { id: "nobody",  label: "❓ Без владельца",           test: p => !p.client_id },
   { id: "unpaid",  label: "💰 Не оплачено",          test: p => !p.paid && p.weight > 0 },
 ];
 
@@ -1517,6 +1534,27 @@ function ImportAdmin({ parcels, onDone }) {
     if (onDone) await onDone();
   };
 
+  const createMissing = async () => {
+    if (missing.length === 0) return;
+    if (!confirm(`Завести ${missing.length} посылок без владельца со статусом «${STATUSES[stage].label}»?\n\nКогда клиент вобьёт этот трек у себя, посылка привяжется к нему автоматически.`)) return;
+    setBusy(true);
+    const dates = [null, null, null, null, null, null];
+    for (let i = 1; i <= stage; i++) dates[i] = todayStr();
+    let ok = 0, fail = 0;
+    for (const t of missing) {
+      const { error } = await db.from("parcels").insert({
+        client_id: null,
+        track_number: t,
+        status: stage,
+        status_dates: dates
+      });
+      error ? fail++ : ok++;
+    }
+    setBusy(false);
+    setApplied({ ok, fail, created: true });
+    if (onDone) await onDone();
+  };
+
   const copyMissing = () => {
     const txt = missing.join("\n");
     if (navigator.clipboard?.writeText) navigator.clipboard.writeText(txt);
@@ -1599,7 +1637,7 @@ function ImportAdmin({ parcels, onDone }) {
           {applied && (
             <div className="rounded-xl px-4 py-3 mb-4 text-sm font-bold text-center"
               style={{ background: C.ready + "18", color: C.ready, border: `1.5px solid ${C.ready}33`, fontFamily: F.body }}>
-              ✅ Обновлено: {applied.ok}{applied.fail ? ` · Ошибок: ${applied.fail}` : ""}
+              ✅ {applied.created ? "Заведено без владельца" : "Обновлено"}: {applied.ok}{applied.fail ? ` · Ошибок: ${applied.fail}` : ""}
             </div>
           )}
 
@@ -1618,8 +1656,13 @@ function ImportAdmin({ parcels, onDone }) {
                 ❗ Нет в базе — {missing.length} шт.
               </div>
               <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
-                Эти посылки уехали из Китая, но ни один клиент их не внёс. Найдите владельцев по коду на коробке и добавьте вручную.
+                Эти посылки уехали из Китая, но ни один клиент их не внёс. Заведите их без владельца — когда клиент вобьёт трек у себя, посылка привяжется к нему сама, уже с этим статусом.
               </div>
+              <button onClick={createMissing} disabled={busy}
+                className="w-full py-3 rounded-xl font-bold text-white mb-3 transition-all active:scale-[0.98]"
+                style={{ background: C.gold, fontFamily: F.body, opacity: busy ? 0.6 : 1 }}>
+                {busy ? "Создание…" : `📦 Завести ${missing.length} шт. без владельца`}
+              </button>
               <div className="rounded-xl p-3 mb-3 max-h-56 overflow-y-auto" style={{ background: C.paper }}>
                 {missing.map(t => (
                   <div key={t} className="text-xs py-0.5" style={{ fontFamily: F.mono, color: C.ink }}>{t}</div>
@@ -1898,13 +1941,10 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   };
 
   // добавляет трек выбранному клиенту; silent=true — фидбек баннером (режим сканера)
+  // addClient === null → посылка создаётся «ничейной», владелец найдётся,
+  // когда клиент сам вобьёт этот трек у себя
   const createParcelFor = async (trackRaw, titleVal, silent) => {
     const t = (trackRaw || "").trim().toUpperCase();
-    if (!addClient) {
-      const msg = "Сначала выберите клиента";
-      silent ? showAddFeedback(false, "❌ " + msg) : alert(msg);
-      return;
-    }
     if (t.length < 6) {
       const msg = "Трек-номер слишком короткий";
       silent ? showAddFeedback(false, "❌ " + msg) : alert(msg);
@@ -1912,15 +1952,15 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     }
     const dup = parcelsRef.current.find(p => p.track_number === t);
     if (dup) {
-      const who = dup.profiles?.client_code || "—";
-      const msg = `Трек ${t} уже добавлен (клиент ${who})`;
+      const who = dup.client_id ? (dup.profiles?.client_code || "—") : "без владельца";
+      const msg = `Трек ${t} уже в базе (${who})`;
       silent ? showAddFeedback(false, "⚠️ " + msg) : alert(msg);
       return;
     }
     // статус 1 — «Принят на складе», ведь коробка уже физически у нас
     const dates = [null, todayStr(), null, null, null, null];
     const { error } = await db.from("parcels").insert({
-      client_id: addClient.id,
+      client_id: addClient ? addClient.id : null,
       track_number: t,
       title: (titleVal || "").trim() || null,
       status: 1,
@@ -1930,13 +1970,14 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
       silent ? showAddFeedback(false, "❌ " + error.message) : alert("Не удалось добавить: " + error.message);
       return;
     }
+    const target = addClient ? addClient.client_code : "без владельца";
     if (silent) {
-      showAddFeedback(true, `✅ ${shortTrack(t)} → ${addClient.client_code}`);
+      showAddFeedback(true, `✅ ${shortTrack(t)} → ${target}`);
       setAddedCount(n => n + 1);
     } else {
       setAddTrackVal("");
       setAddTitle("");
-      showAddFeedback(true, `✅ ${shortTrack(t)} добавлен клиенту ${addClient.client_code}`);
+      showAddFeedback(true, `✅ ${shortTrack(t)} добавлен (${target})`);
     }
     await load();
   };
@@ -2141,12 +2182,16 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                   </span>
                   <div className="flex items-center gap-2">
                     <button
-                      onClick={() => setClientFilter({ id: p.client_id, code: p.profiles?.client_code || "—", name: p.profiles?.full_name || "" })}
+                      onClick={() => p.client_id && setClientFilter({ id: p.client_id, code: p.profiles?.client_code || "—", name: p.profiles?.full_name || "" })}
                       className="text-xs font-semibold px-2 py-0.5 rounded transition-all active:scale-95"
-                      style={{ background: C.transit + "15", color: C.transit, fontFamily: F.mono }}
-                      title="Показать все посылки этого клиента"
+                      style={{
+                        background: p.client_id ? C.transit + "15" : C.gold + "22",
+                        color: p.client_id ? C.transit : C.gold,
+                        fontFamily: F.mono
+                      }}
+                      title={p.client_id ? "Показать все посылки этого клиента" : "Владелец пока не определён"}
                     >
-                      {p.profiles?.client_code || "—"}
+                      {p.client_id ? (p.profiles?.client_code || "—") : "❓ ничья"}
                     </button>
                     <button
                       onClick={() => adminDelete(p)}
@@ -2382,11 +2427,20 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
             </div>
 
             {/* Шаг 1 — выбор клиента */}
-            {!addClient ? (
-              <>
+            {!addClient ? (              <>
                 <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>
                   Шаг 1. Выберите клиента
                 </label>
+                <button onClick={() => setAddClient({ id: null, client_code: "БЕЗ ВЛАДЕЛЬЦА", full_name: "Владелец найдётся, когда клиент вобьёт трек" })}
+                  className="w-full text-left rounded-xl px-3 py-2.5 mb-3 transition-all active:scale-[0.98]"
+                  style={{ background: C.gold + "15", border: `1.5px solid ${C.gold}44` }}>
+                  <div className="text-sm font-bold" style={{ color: C.gold, fontFamily: F.body }}>
+                    📦 Принять без владельца
+                  </div>
+                  <div className="text-xs" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                    Коробка есть, а чья — пока неизвестно
+                  </div>
+                </button>
                 <input
                   value={clientSearch}
                   onChange={e => setClientSearch(e.target.value)}
@@ -2522,7 +2576,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
       )}
 
       {/* Сканер в режиме приёмки: каждая коробка падает выбранному клиенту */}
-      {addScanner && addClient && (
+      {addScanner && (
         <QRScanner
           continuous
           onScan={handleAddScan}
