@@ -1722,6 +1722,156 @@ function ImportAdmin({ parcels, onDone }) {
   );
 }
 
+// ─── Резервная копия базы ───────────────────────────────────────
+function BackupAdmin({ rate }) {
+  const [busy, setBusy] = useState(false);
+  const [lastBackup, setLastBackup] = useState(() => {
+    try { return localStorage.getItem("cargo2711_last_backup") || ""; } catch(_) { return ""; }
+  });
+
+  const daysSince = (() => {
+    if (!lastBackup) return null;
+    const d = Math.floor((Date.now() - new Date(lastBackup).getTime()) / 86400000);
+    return isNaN(d) ? null : d;
+  })();
+
+  const markDone = () => {
+    const now = new Date().toISOString();
+    try { localStorage.setItem("cargo2711_last_backup", now); } catch(_) {}
+    setLastBackup(now);
+  };
+
+  const download = (content, name, type) => {
+    const blob = new Blob([content], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const stamp = () => new Date().toISOString().slice(0, 10);
+
+  // Полная копия в JSON — для восстановления
+  const backupJSON = async () => {
+    setBusy(true);
+    try {
+      const [p, c, s, n] = await Promise.all([
+        db.from("parcels").select("*").order("created_at", { ascending: true }),
+        db.from("profiles").select("*").order("created_at", { ascending: true }),
+        db.from("settings").select("*"),
+        db.from("announcements").select("*").order("created_at", { ascending: true })
+      ]);
+      const dump = {
+        _info: "Резервная копия cargo_2711",
+        _created: new Date().toISOString(),
+        _note: "Пароли здесь НЕ хранятся — они в системе авторизации Supabase.",
+        parcels: p.data || [],
+        profiles: c.data || [],
+        settings: s.data || [],
+        announcements: n.data || []
+      };
+      download(JSON.stringify(dump, null, 2), `cargo2711_backup_${stamp()}.json`, "application/json");
+      markDone();
+    } catch (e) {
+      alert("Ошибка: " + (e.message || e));
+    }
+    setBusy(false);
+  };
+
+  // Читаемые таблицы — чтобы открыть в Excel и проверить глазами
+  const backupCSV = async () => {
+    setBusy(true);
+    try {
+      const esc = v => {
+        const str = String(v == null ? "" : v);
+        return /[";\n]/.test(str) ? '"' + str.replace(/"/g, '""') + '"' : str;
+      };
+      const [p, c] = await Promise.all([
+        db.from("parcels").select("*, profiles(client_code, full_name, phone)").order("created_at", { ascending: true }),
+        db.from("profiles").select("*").order("created_at", { ascending: true })
+      ]);
+
+      const pLines = [["Дата создания","Трек","Описание","Код клиента","Клиент","Телефон","Статус","Вес","Сумма","Оплачено","Даты этапов"].join(";")];
+      (p.data || []).forEach(x => {
+        pLines.push([
+          new Date(x.created_at).toLocaleString("ru-RU"),
+          esc(x.track_number),
+          esc(x.title || ""),
+          esc(x.profiles?.client_code || "без владельца"),
+          esc(x.profiles?.full_name || ""),
+          esc(x.profiles?.phone || ""),
+          esc(STATUSES[x.status]?.label || x.status),
+          String(x.weight || 0).replace(".", ","),
+          priceKZT(x.weight, rate),
+          x.paid ? "Да" : "Нет",
+          esc((x.status_dates || []).map((d, i) => d ? `${STATUSES[i].label}: ${d}` : null).filter(Boolean).join(" | "))
+        ].join(";"));
+      });
+      download("\uFEFF" + pLines.join("\r\n"), `cargo2711_посылки_${stamp()}.csv`, "text/csv;charset=utf-8");
+
+      const cLines = [["Имя","Телефон","Код клиента","Роль","Дата регистрации"].join(";")];
+      (c.data || []).forEach(x => {
+        cLines.push([
+          esc(x.full_name || ""),
+          esc(x.phone || ""),
+          esc(x.client_code || ""),
+          esc(x.role || ""),
+          x.created_at ? new Date(x.created_at).toLocaleString("ru-RU") : ""
+        ].join(";"));
+      });
+      setTimeout(() => download("\uFEFF" + cLines.join("\r\n"), `cargo2711_клиенты_${stamp()}.csv`, "text/csv;charset=utf-8"), 400);
+
+      markDone();
+    } catch (e) {
+      alert("Ошибка: " + (e.message || e));
+    }
+    setBusy(false);
+  };
+
+  const warn = daysSince === null || daysSince >= 7;
+
+  return (
+    <div className="rounded-2xl p-5 mb-4 slide-up" style={{ background: C.card, border: `1px solid ${warn ? C.stamp + "55" : C.line}` }}>
+      <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>💾 Резервная копия</div>
+      <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+        Скачивает все посылки, клиентов, настройки и объявления к вам на устройство. Делайте раз в неделю и храните копии в облаке или на почте.
+      </div>
+
+      <div className="rounded-xl px-3 py-2.5 mb-3 text-xs"
+        style={{
+          background: warn ? C.stamp + "12" : C.ready + "12",
+          color: warn ? C.stamp : C.ready,
+          fontFamily: F.body,
+          fontWeight: 600
+        }}>
+        {lastBackup
+          ? (daysSince === 0
+              ? "✅ Копия сделана сегодня"
+              : daysSince < 7
+                ? `✅ Последняя копия: ${daysSince} дн. назад`
+                : `⚠️ Последняя копия была ${daysSince} дн. назад — пора обновить`)
+          : "⚠️ Копий ещё не было — сделайте первую сейчас"}
+      </div>
+
+      <button onClick={backupJSON} disabled={busy}
+        className="w-full py-3 rounded-xl font-bold text-white mb-2 transition-all active:scale-[0.98]"
+        style={{ background: C.stamp, fontFamily: F.body, opacity: busy ? 0.6 : 1 }}>
+        {busy ? "Выгрузка…" : "⬇ Полная копия (.json)"}
+      </button>
+      <button onClick={backupCSV} disabled={busy}
+        className="w-full py-3 rounded-xl font-bold transition-all active:scale-[0.98]"
+        style={{ background: "transparent", color: C.transit, border: `1.5px solid ${C.transit}55`, fontFamily: F.body, opacity: busy ? 0.6 : 1 }}>
+        ⬇ Читаемые таблицы (.csv для Excel)
+      </button>
+
+      <div className="mt-3 rounded-xl px-3 py-2.5 text-xs" style={{ background: C.paper, color: C.inkSoft, fontFamily: F.body, border: `1px dashed ${C.line}` }}>
+        <b style={{ color: C.ink }}>Важно:</b> пароли клиентов в копию не попадают — они хранятся в системе входа Supabase. Если база потеряется, посылки и коды восстановятся, а пароли придётся задать заново кнопкой «Сменить пароль».
+      </div>
+    </div>
+  );
+}
+
 // ─── Админка ─────────────────────────────────────────────────────
 function AdminApp({ settings, reloadSettings, onLogout }) {
   const [tab, setTab] = useState("parcels");
@@ -1736,6 +1886,15 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [scanCount, setScanCount] = useState(0);
   const [lastScanned, setLastScanned] = useState(null); // для отката последнего скана
   const [reportMode, setReportMode] = useState("report"); // report | import
+
+  // давно ли делали резервную копию (7+ дней или никогда → предупреждаем)
+  const backupWarn = (() => {
+    try {
+      const last = localStorage.getItem("cargo2711_last_backup");
+      if (!last) return true;
+      return (Date.now() - new Date(last).getTime()) / 86400000 >= 7;
+    } catch(_) { return false; }
+  })();
   const [exportFrom, setExportFrom] = useState("");
   const [exportTo, setExportTo] = useState("");
   // добавление посылки админом
@@ -2043,6 +2202,13 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
       </div>
 
       <div className="px-4 pt-4">
+        {backupWarn && tab !== "settings" && (
+          <button onClick={() => setTab("settings")}
+            className="w-full rounded-xl px-4 py-2.5 mb-3 text-xs font-bold text-left transition-all active:scale-[0.99]"
+            style={{ background: C.stamp + "12", color: C.stamp, border: `1px solid ${C.stamp}33`, fontFamily: F.body }}>
+            ⚠️ Резервной копии базы давно не было — сделать сейчас ›
+          </button>
+        )}
         {tab === "parcels" && (
           <>
             <div className="flex gap-2 mb-3">
@@ -2358,6 +2524,8 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
 
         {tab === "settings" && (
           <>
+            <BackupAdmin rate={rate} />
+
             {/* Экспорт в Excel */}
             <div className="rounded-2xl p-5 mb-4 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
               <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>📊 Экспорт в Excel</div>
