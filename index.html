@@ -2076,7 +2076,14 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                 }}
               >
                 {ADMIN_FILTERS.map(f => {
-                  const cnt = parcels.filter(p => !clientFilter || p.client_id === clientFilter.id).filter(f.test).length;
+                  const cnt = parcels
+                    .filter(p => !clientFilter || p.client_id === clientFilter.id)
+                    .filter(p =>
+                      p.track_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      (p.profiles?.client_code || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+                      (p.title || "").toLowerCase().includes(searchQuery.toLowerCase())
+                    )
+                    .filter(f.test).length;
                   return (
                     <option key={f.id} value={f.id} style={{ color: "#14202E", background: "#fff" }}>
                       {f.label} ({cnt})
@@ -2089,7 +2096,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
             </div>
 
             <div className="text-xs mb-3 text-center" style={{ color: C.inkSoft, fontFamily: F.body }}>
-              📷 Камера — режим «подряд» · USB-сканер: кликните в поле поиска и сканируйте
+              Показано: <b style={{ color: C.ink, fontFamily: F.mono }}>{filteredParcels.length}</b> из {parcels.length} · 📷 камера или USB-сканер в поле поиска
             </div>
 
             {!showScanner && scanFeedback && (
