@@ -99,13 +99,27 @@ const todayStr = () => {
 const priceKZT = (w, rate) => Math.round((w||0) * (rate||0));
 const shortTrack = t => t && t.length > 8 ? t.slice(0, 4) + "…" + t.slice(-4) : t;
 
+// USB-сканер печатает как клавиатура: при русской раскладке Y превращается в Н,
+// T в Е и т.д. Возвращаем кириллицу обратно в латиницу по позициям клавиш.
+const RU_TO_EN = {
+  "Й":"Q","Ц":"W","У":"E","К":"R","Е":"T","Н":"Y","Г":"U","Ш":"I","Щ":"O","З":"P","Х":"[","Ъ":"]",
+  "Ф":"A","Ы":"S","В":"D","А":"F","П":"G","Р":"H","О":"J","Л":"K","Д":"L","Ж":";","Э":"'",
+  "Я":"Z","Ч":"X","С":"C","М":"V","И":"B","Т":"N","Ь":"M","Б":",","Ю":"."
+};
+function fixLayout(s) {
+  return String(s).replace(/[А-ЯЁа-яё]/g, ch => RU_TO_EN[ch.toUpperCase()] || ch);
+}
+
 // Извлечь трек-номер из результата сканирования
 function extractTrack(decoded) {
-  let track = decoded;
-  const urlMatch = decoded.match(/\/([A-Z0-9]{8,})/i);
+  let track = fixLayout(decoded);
+  const urlMatch = track.match(/\/([A-Z0-9]{8,})/i);
   if (urlMatch) track = urlMatch[1];
   return track.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 }
+
+// Нормализовать трек, введённый вручную или USB-сканером
+const normTrack = s => fixLayout(s).replace(/[^A-Za-z0-9]/g, "").toUpperCase();
 
 // Звуковой сигнал при сканировании (без файлов — чистый Web Audio)
 let _audioCtx = null;
@@ -537,7 +551,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
 
   // Открыть окно добавления (трек может быть уже введён или отсканирован)
   const openAdd = (track) => {
-    setNewTrack((track || newTrack || "").toUpperCase());
+    setNewTrack(normTrack(track || newTrack || ""));
     setAddErr("");
     setShowAdd(true);
   };
@@ -550,7 +564,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
   };
 
   const addTrack = async () => {
-    const t = newTrack.trim().toUpperCase();
+    const t = normTrack(newTrack);
     if (t.length < 6) { setAddErr("Трек-номер слишком короткий (минимум 6 символов)"); return; }
 
     const { data, error } = await db.rpc("claim_or_create_parcel", {
@@ -669,7 +683,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
                 <div className="flex-1 relative">
                   <input
                     value={newTrack}
-                    onChange={e => setNewTrack(e.target.value.toUpperCase())}
+                    onChange={e => setNewTrack(normTrack(e.target.value))}
                     placeholder="Вставьте трек-номер"
                     className="w-full rounded-xl px-4 py-3 pr-12 outline-none"
                     style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, fontSize: 14, background: C.card, color: C.ink }}
@@ -893,7 +907,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
               <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Трек-номер</label>
               <input
                 value={newTrack}
-                onChange={e => setNewTrack(e.target.value.toUpperCase())}
+                onChange={e => setNewTrack(normTrack(e.target.value))}
                 placeholder="Введите трек-код"
                 autoFocus={!newTrack}
                 className="w-full rounded-xl px-4 py-3 outline-none"
@@ -1489,7 +1503,7 @@ function ImportAdmin({ parcels, onDone }) {
             } else {
               raw = String(cell.w != null ? cell.w : cell.v);
             }
-            const t = raw.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+            const t = normTrack(raw);
             if (t.length >= 8 && /\d/.test(t)) found.push(t);
           });
         });
@@ -2014,6 +2028,22 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     load();
   };
 
+  // исправить трек-номер (например, если сканер набрал его в русской раскладке)
+  const editTrack = async (p) => {
+    const val = prompt(`Исправить трек-номер\n\nСейчас: ${p.track_number}`, p.track_number);
+    if (val === null) return;
+    const t = normTrack(val);
+    if (t.length < 6) { alert("Трек-номер слишком короткий"); return; }
+    if (t === p.track_number) return;
+    if (parcelsRef.current.some(x => x.track_number === t && x.id !== p.id)) {
+      alert("Такой трек уже есть в базе");
+      return;
+    }
+    const { error } = await db.from("parcels").update({ track_number: t }).eq("id", p.id);
+    if (error) { alert("Не удалось изменить: " + error.message); return; }
+    load();
+  };
+
   const adminDelete = async (p) => {
     if (!confirm(`Удалить посылку ${p.track_number}?\n\nОна исчезнет и у клиента ${p.profiles?.client_code || ""}. Это действие нельзя отменить.`)) return;
     const { error } = await db.from("parcels").delete().eq("id", p.id);
@@ -2103,7 +2133,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   // addClient === null → посылка создаётся «ничейной», владелец найдётся,
   // когда клиент сам вобьёт этот трек у себя
   const createParcelFor = async (trackRaw, titleVal, silent) => {
-    const t = (trackRaw || "").trim().toUpperCase();
+    const t = normTrack(trackRaw || "");
     if (t.length < 6) {
       const msg = "Трек-номер слишком короткий";
       silent ? showAddFeedback(false, "❌ " + msg) : alert(msg);
@@ -2161,14 +2191,19 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const revenue = parcels.filter(p => p.paid).reduce((s, p) => s + priceKZT(p.weight, rate), 0);
 
   const activeFilter = ADMIN_FILTERS.find(f => f.id === statusFilter) || ADMIN_FILTERS[0];
+  // поиск понимает и русскую раскладку: «не0711» найдёт YT0711…
+  const q = searchQuery.toLowerCase();
+  const qFixed = fixLayout(searchQuery).toLowerCase();
+  const matches = p =>
+    p.track_number.toLowerCase().includes(q) ||
+    p.track_number.toLowerCase().includes(qFixed) ||
+    (p.profiles?.client_code || "").toLowerCase().includes(q) ||
+    (p.title || "").toLowerCase().includes(q);
+
   const filteredParcels = parcels
     .filter(p => !clientFilter || p.client_id === clientFilter.id)
     .filter(activeFilter.test)
-    .filter(p =>
-      p.track_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (p.profiles?.client_code || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (p.title || "").toLowerCase().includes(searchQuery.toLowerCase())
-    );
+    .filter(matches);
 
   // сводка по выбранному клиенту
   const clientParcels = clientFilter ? parcels.filter(p => p.client_id === clientFilter.id) : [];
@@ -2285,11 +2320,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                 {ADMIN_FILTERS.map(f => {
                   const cnt = parcels
                     .filter(p => !clientFilter || p.client_id === clientFilter.id)
-                    .filter(p =>
-                      p.track_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                      (p.profiles?.client_code || "").toLowerCase().includes(searchQuery.toLowerCase()) ||
-                      (p.title || "").toLowerCase().includes(searchQuery.toLowerCase())
-                    )
+                    .filter(matches)
                     .filter(f.test).length;
                   return (
                     <option key={f.id} value={f.id} style={{ color: "#14202E", background: "#fff" }}>
@@ -2343,9 +2374,12 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               <div key={p.id} className="rounded-xl p-4 mb-3 slide-up"
                 style={{ background: C.card, border: `1px solid ${C.line}`, animationDelay: `${idx * 20}ms` }}>
                 <div className="flex items-center justify-between mb-1">
-                  <span style={{ fontFamily: F.mono, fontSize: 13, fontWeight: 600, color: C.ink }}>
+                  <button onClick={() => editTrack(p)}
+                    className="text-left transition-all active:scale-95"
+                    style={{ fontFamily: F.mono, fontSize: 13, fontWeight: 600, color: C.ink }}
+                    title="Нажмите, чтобы исправить трек-номер">
                     {p.track_number}
-                  </span>
+                  </button>
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => p.client_id && setClientFilter({ id: p.client_id, code: p.profiles?.client_code || "—", name: p.profiles?.full_name || "" })}
@@ -2689,7 +2723,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                 <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Трек-номер</label>
                 <input
                   value={addTrackVal}
-                  onChange={e => setAddTrackVal(e.target.value.toUpperCase())}
+                  onChange={e => setAddTrackVal(normTrack(e.target.value))}
                   onKeyDown={e => {
                     // USB-сканер тоже работает: печатает трек и жмёт Enter
                     if (e.key === "Enter") createParcelFor(addTrackVal, addTitle, false);
