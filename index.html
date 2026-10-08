@@ -776,9 +776,22 @@ function ClientApp({ session, profile, settings, onLogout }) {
 
           {tab === "address" && (
             <div className="rounded-2xl p-5 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
-              <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>📍 Адрес склада в Китае</div>
-              <div className="text-xs mb-4" style={{ color: C.inkSoft, fontFamily: F.body }}>
-                Ваш код <span style={{ color: C.stamp, fontFamily: F.mono }}>{profile.client_code}</span> уже подставлен. Копируйте каждое поле кнопкой 📋 и вставляйте по отдельности — так код не потеряется.
+              <div className="text-sm font-bold mb-3" style={{ color: C.ink, fontFamily: F.body }}>📍 Адрес склада в Китае</div>
+
+              <div className="rounded-xl px-4 py-3 mb-4 text-center" style={{ background: C.ink }}>
+                <div className="text-xs" style={{ color: "#9AA6B5", fontFamily: F.body }}>
+                  Ваш код обязан быть в адресе
+                </div>
+                <div style={{ fontFamily: F.mono, color: "#fff", fontSize: 26, fontWeight: 600, letterSpacing: 3 }}>
+                  {profile.client_code}
+                </div>
+                <div className="text-xs mt-1" style={{ color: "#9AA6B5", fontFamily: F.body }}>
+                  в имени получателя <b style={{ color: "#fff" }}>и</b> в конце адреса
+                </div>
+              </div>
+
+              <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                Копируйте поля кнопкой 📋 и вставляйте по одному — так код не потеряется.
               </div>
               <div className="space-y-3">
                 {[
@@ -811,8 +824,41 @@ function ClientApp({ session, profile, settings, onLogout }) {
                 ))}
               </div>
 
-              <div className="mt-4 rounded-xl px-3 py-2.5 text-xs" style={{ background: C.paper, color: C.inkSoft, fontFamily: F.body, border: `1px dashed ${C.line}` }}>
-                <b style={{ color: C.ink }}>Pinduoduo:</b> не вставляйте адрес целиком в окно распознавания — оно вырезает ваш код. Откройте «добавить адрес» и вставьте каждое поле по отдельности; регион 广东省 → 佛山市 → 南海区 выберите из списка. Сохраните адрес один раз — дальше просто выбирайте его при заказах.
+              {/* Кнопка: только код — для дописывания после распознавания */}
+              <button
+                onClick={() => copyField("CODE", profile.client_code)}
+                className="w-full py-3 rounded-xl font-bold mt-4 transition-all active:scale-[0.98]"
+                style={{
+                  background: copiedField === "CODE" ? C.ready : C.gold,
+                  color: "#fff",
+                  fontFamily: F.body
+                }}>
+                {copiedField === "CODE" ? "✅ Код скопирован" : `🔑 Скопировать только код ${profile.client_code}`}
+              </button>
+
+              <div className="mt-4 rounded-xl px-4 py-3" style={{ background: C.paper, border: `1px dashed ${C.line}` }}>
+                <div className="text-xs font-bold mb-2" style={{ color: C.ink, fontFamily: F.body }}>
+                  📕 Pinduoduo — адрес заводится один раз
+                </div>
+                <div className="text-xs" style={{ color: C.inkSoft, fontFamily: F.body, lineHeight: 1.6 }}>
+                  Pinduoduo при вставке «умно» распознаёт адрес и <b>вырезает ваш код</b> — это их алгоритм, обойти его нельзя. Поэтому код дописывается вручную, но только один раз:
+                  <div className="mt-2 space-y-1.5">
+                    <div><b style={{ color: C.ink }}>1.</b> Вставьте адрес как обычно и сохраните (保存) — код пропадёт, это нормально.</div>
+                    <div><b style={{ color: C.ink }}>2.</b> Откройте этот адрес снова: «Изменения» / 修改.</div>
+                    <div><b style={{ color: C.ink }}>3.</b> Нажмите кнопку «🔑 Скопировать только код» выше.</div>
+                    <div><b style={{ color: C.ink }}>4.</b> Поставьте курсор в конец поля <b>收货人</b> и вставьте код: получится <span style={{ fontFamily: F.mono, color: C.ink }}>{(settings.china_recipient || "").trim()} {profile.client_code}</span></div>
+                    <div><b style={{ color: C.ink }}>5.</b> То же в конце поля <b>详细地址</b>, после 库房, и допишите свой номер телефона.</div>
+                    <div><b style={{ color: C.ink }}>6.</b> Сохраните (保存). Готово — дальше при каждом заказе просто выбирайте этот адрес, код уже внутри.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-3 rounded-xl px-4 py-3 text-xs" style={{ background: C.ready + "12", color: C.inkSoft, fontFamily: F.body, lineHeight: 1.6, border: `1px solid ${C.ready}33` }}>
+                <b style={{ color: C.ready }}>Taobao / 1688:</b> там распознавание мягче — обычно достаточно кнопки «Скопировать всё» ниже. Но после сохранения <b>проверьте глазами</b>, что код {profile.client_code} виден в имени получателя и в адресе. Если пропал — допишите так же, как в шагах 3–5.
+              </div>
+
+              <div className="mt-3 rounded-xl px-4 py-3 text-xs" style={{ background: C.stamp + "0F", color: C.inkSoft, fontFamily: F.body, lineHeight: 1.6, border: `1px solid ${C.stamp}33` }}>
+                ⚠️ <b style={{ color: C.stamp }}>Без кода {profile.client_code} посылка не будет опознана</b> — склад не поймёт, чья она. Проверяйте адрес перед каждым первым заказом у нового продавца.
               </div>
 
               <button onClick={copyAddr} className="w-full py-3 rounded-xl font-bold text-white mt-3 transition-all active:scale-[0.98]"
