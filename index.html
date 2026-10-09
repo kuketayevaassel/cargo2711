@@ -631,11 +631,11 @@ function ClientApp({ session, profile, settings, onLogout }) {
     const street = (settings.china_street || "").trim();
     const region = (settings.china_region || "").trim();
     const chinaPhone = (settings.china_phone || "").trim();
-    // Формат, который гарантированно распознаёт Pinduoduo/Taobao
-    // (проверен на реальных сохранённых адресах):
-    //   имя+код，телефон
-    //   регион улица+код сотовый_клиента
-    const txt = `${rec}${profile.client_code}，${chinaPhone}\n${region} ${street}${profile.client_code} ${myPhone}`;
+    // Код пишем с китайским суффиксом 号 («номер»): распознавание Pinduoduo
+    // вырезает латиницу, но номера в китайском формате оставляет —
+    // даже если AG пропадёт, цифры клиента (8593号) останутся в адресе.
+    const digits = (profile.client_code || "").replace(/\D/g, "");
+    const txt = `${rec}${profile.client_code}，${chinaPhone}\n${region} ${street}${profile.client_code}号 ${myPhone}`;
     writeClipboard(txt);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
@@ -801,7 +801,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
                   ["详细地址 (Адрес)", (() => {
                     const d = (profile.phone || "").replace(/\D/g, "");
                     const myPhone = d ? "8" + (d.length === 11 ? d.slice(1) : d) : "";
-                    return `${(settings.china_street || "").trim()}${profile.client_code} ${myPhone}`;
+                    return `${(settings.china_street || "").trim()}${profile.client_code}号 ${myPhone}`;
                   })()]
                 ].map(([k, v]) => (
                   <div key={k} className="flex items-center gap-2">
@@ -858,7 +858,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
               </div>
 
               <div className="mt-3 rounded-xl px-4 py-3 text-xs" style={{ background: C.stamp + "0F", color: C.inkSoft, fontFamily: F.body, lineHeight: 1.6, border: `1px solid ${C.stamp}33` }}>
-                ⚠️ <b style={{ color: C.stamp }}>Без кода {profile.client_code} посылка не будет опознана</b> — склад не поймёт, чья она. Проверяйте адрес перед каждым первым заказом у нового продавца.
+                <b style={{ color: C.stamp }}>Что проверить после сохранения.</b> В адресе должны остаться цифры <span style={{ fontFamily: F.mono, color: C.ink }}>{(profile.client_code || "").replace(/\D/g, "")}</span> — хотя бы в виде <span style={{ fontFamily: F.mono, color: C.ink }}>{(profile.client_code || "").replace(/\D/g, "")}号</span>. Этого складу достаточно, чтобы понять, чья посылка. Если и цифры пропали — допишите код по шагам выше, иначе коробку не опознают.
               </div>
 
               <button onClick={copyAddr} className="w-full py-3 rounded-xl font-bold text-white mt-3 transition-all active:scale-[0.98]"
@@ -1521,8 +1521,9 @@ function ReportsAdmin({ parcels, rate, clients }) {
 }
 
 // ─── Импорт списка из Excel (сверка отправки со склада) ─────────
-function ImportAdmin({ parcels, onDone }) {
+function ImportAdmin({ parcels, batches, onDone }) {
   const [stage, setStage] = useState(2);     // какой статус присвоить (по умолчанию «Отправлен из Китая»)
+  const [batchId, setBatchId] = useState(""); // в какую партию положить
   const [fileName, setFileName] = useState("");
   const [tracks, setTracks] = useState([]);  // распознанные из файла
   const [busy, setBusy] = useState(false);
@@ -1586,7 +1587,9 @@ function ImportAdmin({ parcels, onDone }) {
     for (const p of toUpdate) {
       const dates = [...(p.status_dates || [null, null, null, null, null, null])];
       for (let i = p.status + 1; i <= stage; i++) if (!dates[i]) dates[i] = todayStr();
-      const { error } = await db.from("parcels").update({ status: stage, status_dates: dates }).eq("id", p.id);
+      const upd = { status: stage, status_dates: dates };
+      if (batchId) upd.batch_id = Number(batchId);
+      const { error } = await db.from("parcels").update(upd).eq("id", p.id);
       error ? fail++ : ok++;
     }
     setBusy(false);
@@ -1602,12 +1605,9 @@ function ImportAdmin({ parcels, onDone }) {
     for (let i = 1; i <= stage; i++) dates[i] = todayStr();
     let ok = 0, fail = 0;
     for (const t of missing) {
-      const { error } = await db.from("parcels").insert({
-        client_id: null,
-        track_number: t,
-        status: stage,
-        status_dates: dates
-      });
+      const row = { client_id: null, track_number: t, status: stage, status_dates: dates };
+      if (batchId) row.batch_id = Number(batchId);
+      const { error } = await db.from("parcels").insert(row);
       error ? fail++ : ok++;
     }
     setBusy(false);
@@ -1657,6 +1657,21 @@ function ImportAdmin({ parcels, onDone }) {
             style={{ border: `1.5px solid ${C.line}`, background: C.card, color: C.ink, fontFamily: F.body }}>
             {STATUSES.map((s, i) => (
               <option key={i} value={i} style={{ color: "#14202E", background: "#fff" }}>{s.icon} {s.label}</option>
+            ))}
+          </select>
+          <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs" style={{ color: C.inkSoft }}>▼</span>
+        </div>
+
+        <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Партия (мешок)</label>
+        <div className="relative mb-3">
+          <select value={batchId} onChange={e => setBatchId(e.target.value)}
+            className="w-full rounded-xl px-4 py-2.5 pr-10 outline-none text-sm appearance-none"
+            style={{ border: `1.5px solid ${C.line}`, background: C.card, color: C.ink, fontFamily: F.body }}>
+            <option value="">Без партии</option>
+            {(batches || []).map(b => (
+              <option key={b.id} value={b.id} style={{ color: "#14202E", background: "#fff" }}>
+                {b.name}{b.sent_date ? ` (${new Date(b.sent_date).toLocaleDateString("ru-RU")})` : ""}
+              </option>
             ))}
           </select>
           <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs" style={{ color: C.inkSoft }}>▼</span>
@@ -1778,6 +1793,445 @@ function ImportAdmin({ parcels, onDone }) {
           )}
         </>
       )}
+    </>
+  );
+}
+
+// ─── Партии (мешки) ─────────────────────────────────────────────
+const money = n => Math.round(n || 0).toLocaleString("ru-RU") + " ₸";
+
+function BatchesAdmin({ parcels, rate, batches, reloadBatches }) {
+  const [name, setName] = useState("");
+  const [sentDate, setSentDate] = useState("");
+  const [freight, setFreight] = useState("");
+  const [other, setOther] = useState("");
+  const [weight, setWeight] = useState("");
+  const [editId, setEditId] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(null);   // раскрытая партия
+
+  const reset = () => {
+    setName(""); setSentDate(""); setFreight(""); setOther(""); setWeight(""); setEditId(null);
+  };
+
+  const save = async () => {
+    if (!name.trim()) { alert("Введите название партии"); return; }
+    setBusy(true);
+    const payload = {
+      name: name.trim(),
+      sent_date: sentDate || null,
+      freight_cost: parseFloat(freight) || 0,
+      other_cost: parseFloat(other) || 0,
+      weight_kg: parseFloat(weight) || 0
+    };
+    const { error } = editId
+      ? await db.from("batches").update(payload).eq("id", editId)
+      : await db.from("batches").insert(payload);
+    setBusy(false);
+    if (error) { alert("Ошибка: " + error.message); return; }
+    reset();
+    reloadBatches();
+  };
+
+  const startEdit = (b) => {
+    setEditId(b.id);
+    setName(b.name);
+    setSentDate(b.sent_date || "");
+    setFreight(String(b.freight_cost || ""));
+    setOther(String(b.other_cost || ""));
+    setWeight(String(b.weight_kg || ""));
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
+  const remove = async (b) => {
+    if (!confirm(`Удалить партию «${b.name}»?\n\nПосылки останутся, просто отвяжутся от неё.`)) return;
+    const { error } = await db.from("batches").delete().eq("id", b.id);
+    if (error) { alert("Ошибка: " + error.message); return; }
+    reloadBatches();
+  };
+
+  // расчёт по партии
+  const calc = (b) => {
+    const list = parcels.filter(p => p.batch_id === b.id);
+    const billWeight = list.reduce((s, p) => s + (Number(p.weight) || 0), 0);
+    const revenue = list.reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+    const paid = list.filter(p => p.paid).reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+    const cost = (Number(b.freight_cost) || 0) + (Number(b.other_cost) || 0);
+    const profit = revenue - cost;
+    // себестоимость кг считаем по весу перевозчика, если он указан (он всегда больше)
+    const baseWeight = Number(b.weight_kg) > 0 ? Number(b.weight_kg) : billWeight;
+    const costPerKg = baseWeight > 0 ? cost / baseWeight : 0;
+    return { list, billWeight, revenue, paid, cost, profit, costPerKg, baseWeight };
+  };
+
+  return (
+    <>
+      <div className="rounded-2xl p-5 mb-4 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+        <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>
+          {editId ? "✏️ Изменить партию" : "📦 Новая партия (мешок)"}
+        </div>
+        <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+          Одна отправка из Китая. Укажите, сколько заплатили за перевозку — система посчитает себестоимость килограмма и прибыль.
+        </div>
+
+        <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Название</label>
+        <input value={name} onChange={e => setName(e.target.value)} placeholder="Партия 15 сентября"
+          className="w-full rounded-xl px-4 py-2.5 mb-3 outline-none text-sm"
+          style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, color: C.ink }} />
+
+        <div className="flex gap-2 mb-3">
+          <div className="flex-1">
+            <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Дата отправки</label>
+            <input type="date" value={sentDate} onChange={e => setSentDate(e.target.value)}
+              className="w-full rounded-xl px-3 py-2.5 outline-none text-sm"
+              style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+          </div>
+          <div className="flex-1">
+            <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Вес по накладной, кг</label>
+            <input type="number" min="0" step="0.1" value={weight} onChange={e => setWeight(e.target.value)} placeholder="340"
+              className="w-full rounded-xl px-3 py-2.5 outline-none text-sm"
+              style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+          </div>
+        </div>
+
+        <div className="flex gap-2 mb-4">
+          <div className="flex-1">
+            <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Перевозка, ₸</label>
+            <input type="number" min="0" value={freight} onChange={e => setFreight(e.target.value)} placeholder="420000"
+              className="w-full rounded-xl px-3 py-2.5 outline-none text-sm"
+              style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+          </div>
+          <div className="flex-1">
+            <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Прочее, ₸</label>
+            <input type="number" min="0" value={other} onChange={e => setOther(e.target.value)} placeholder="таможня, разгрузка"
+              className="w-full rounded-xl px-3 py-2.5 outline-none text-sm"
+              style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          {editId && (
+            <button onClick={reset} className="flex-1 py-3 rounded-xl font-bold"
+              style={{ background: "transparent", color: C.inkSoft, border: `1.5px solid ${C.line}`, fontFamily: F.body }}>
+              Отмена
+            </button>
+          )}
+          <button onClick={save} disabled={busy}
+            className="flex-1 py-3 rounded-xl font-bold text-white transition-all active:scale-[0.98]"
+            style={{ background: C.stamp, fontFamily: F.body, opacity: busy ? 0.6 : 1 }}>
+            {busy ? "Сохранение…" : editId ? "💾 Сохранить" : "➕ Создать партию"}
+          </button>
+        </div>
+      </div>
+
+      {batches.length === 0 && (
+        <div className="text-center py-10">
+          <div className="text-4xl mb-3">📦</div>
+          <div className="text-sm" style={{ color: C.inkSoft, fontFamily: F.body }}>
+            Партий пока нет. Создайте первую — и привязывайте к ней посылки при импорте списка отправки.
+          </div>
+        </div>
+      )}
+
+      {batches.map(b => {
+        const r = calc(b);
+        const isOpen = open === b.id;
+        return (
+          <div key={b.id} className="rounded-xl mb-3 overflow-hidden" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+            <button onClick={() => setOpen(isOpen ? null : b.id)} className="w-full text-left p-4">
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-sm font-bold" style={{ color: C.ink, fontFamily: F.body }}>{b.name}</div>
+                <span style={{ color: C.inkSoft, fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
+              </div>
+              <div className="text-xs mb-2" style={{ color: C.inkSoft, fontFamily: F.mono }}>
+                {b.sent_date ? new Date(b.sent_date).toLocaleDateString("ru-RU") : "дата не указана"} · посылок: {r.list.length} · {r.billWeight.toFixed(1)} кг
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-xs" style={{ color: C.inkSoft, fontFamily: F.body }}>Прибыль</span>
+                <span className="text-sm font-bold" style={{ color: r.profit >= 0 ? C.ready : C.stamp, fontFamily: F.mono }}>
+                  {r.profit >= 0 ? "+" : ""}{money(r.profit)}
+                </span>
+              </div>
+            </button>
+
+            {isOpen && (
+              <div className="px-4 pb-4" style={{ borderTop: `1px dashed ${C.line}` }}>
+                <div className="grid grid-cols-2 gap-2 mt-3 mb-3">
+                  {[
+                    ["Выручка", money(r.revenue), C.ink],
+                    ["Собрано", money(r.paid), r.paid < r.revenue ? C.gold : C.ready],
+                    ["Расходы", money(r.cost), C.stamp],
+                    ["Себестоим. кг", money(r.costPerKg), C.inkSoft]
+                  ].map(([k, v, col]) => (
+                    <div key={k} className="rounded-lg px-3 py-2" style={{ background: C.paper }}>
+                      <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>{k}</div>
+                      <div className="text-sm font-bold" style={{ color: col, fontFamily: F.mono }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: r.profit >= 0 ? C.ready + "12" : C.stamp + "12" }}>
+                  <div className="text-xs" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                    Ваш тариф <b style={{ color: C.ink }}>{rate} ₸/кг</b>, себестоимость <b style={{ color: C.ink }}>{Math.round(r.costPerKg)} ₸/кг</b> →
+                    заработок <b style={{ color: r.costPerKg < rate ? C.ready : C.stamp }}>{Math.round(rate - r.costPerKg)} ₸ с каждого кг</b>
+                  </div>
+                  {r.baseWeight > 0 && r.billWeight > 0 && r.baseWeight !== r.billWeight && (
+                    <div className="text-xs mt-1" style={{ color: C.gold, fontFamily: F.body }}>
+                      ⚠️ Вес по накладной {r.baseWeight} кг, а по посылкам {r.billWeight.toFixed(1)} кг — разница {(r.baseWeight - r.billWeight).toFixed(1)} кг не оплачивается клиентами
+                    </div>
+                  )}
+                </div>
+
+                {r.list.length > 0 && (
+                  <div className="max-h-48 overflow-y-auto mb-3">
+                    {r.list.map(p => (
+                      <div key={p.id} className="flex items-center justify-between py-1 text-xs">
+                        <span style={{ fontFamily: F.mono, color: C.ink }}>{shortTrack(p.track_number)}</span>
+                        <span style={{ fontFamily: F.mono, color: C.transit }}>{p.profiles?.client_code || "—"}</span>
+                        <span style={{ fontFamily: F.mono, color: p.paid ? C.ready : C.stamp }}>
+                          {p.weight > 0 ? money(priceKZT(p.weight, rate)) : "—"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex gap-2">
+                  <button onClick={() => startEdit(b)} className="flex-1 text-xs font-bold py-2 rounded-lg"
+                    style={{ background: C.transit + "15", color: C.transit, fontFamily: F.body }}>
+                    ✏️ Изменить
+                  </button>
+                  <button onClick={() => remove(b)} className="text-xs font-bold px-3 py-2 rounded-lg"
+                    style={{ background: C.stamp + "12", color: C.stamp, fontFamily: F.body }}>
+                    🗑
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// ─── Финансы за период ──────────────────────────────────────────
+const EXPENSE_CATS = ["Перевозка", "Аренда", "Зарплата", "Таможня", "Реклама", "Прочее"];
+
+function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses }) {
+  const today = new Date();
+  const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+  const iso = d => d.toISOString().slice(0, 10);
+
+  const [from, setFrom] = useState(iso(firstDay));
+  const [to, setTo] = useState(iso(today));
+  const [cat, setCat] = useState(EXPENSE_CATS[0]);
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const [spentOn, setSpentOn] = useState(iso(today));
+  const [busy, setBusy] = useState(false);
+
+  const fromD = from ? new Date(from + "T00:00:00") : null;
+  const toD = to ? new Date(to + "T23:59:59") : null;
+
+  // выручка считаем по дате выдачи (деньги приходят в момент выдачи)
+  const inPeriod = parcels.filter(p => {
+    const issued = parseRuDate((p.status_dates || [])[5]);
+    if (!issued) return false;
+    if (fromD && issued < fromD) return false;
+    if (toD && issued > toD) return false;
+    return true;
+  });
+
+  const revenue = inPeriod.reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+  const collected = inPeriod.filter(p => p.paid).reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+  const debt = revenue - collected;
+  const kg = inPeriod.reduce((s, p) => s + (Number(p.weight) || 0), 0);
+
+  // долг по всем невыданным и невыплаченным
+  const totalDebt = parcels.filter(p => !p.paid && p.weight > 0).reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+
+  // расходы: обычные + стоимость партий, отправленных в периоде
+  const periodExpenses = expenses.filter(e => {
+    const d = e.spent_on ? new Date(e.spent_on + "T12:00:00") : null;
+    if (!d) return false;
+    if (fromD && d < fromD) return false;
+    if (toD && d > toD) return false;
+    return true;
+  });
+  const expSum = periodExpenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+
+  const periodBatches = batches.filter(b => {
+    if (!b.sent_date) return false;
+    const d = new Date(b.sent_date + "T12:00:00");
+    if (fromD && d < fromD) return false;
+    if (toD && d > toD) return false;
+    return true;
+  });
+  const batchCost = periodBatches.reduce((s, b) => s + (Number(b.freight_cost) || 0) + (Number(b.other_cost) || 0), 0);
+
+  const totalCost = expSum + batchCost;
+  const profit = collected - totalCost;
+
+  const byCat = {};
+  periodExpenses.forEach(e => { byCat[e.category] = (byCat[e.category] || 0) + (Number(e.amount) || 0); });
+  if (batchCost > 0) byCat["Партии (перевозка)"] = (byCat["Партии (перевозка)"] || 0) + batchCost;
+
+  const addExpense = async () => {
+    const amt = parseFloat(amount);
+    if (!amt || amt <= 0) { alert("Введите сумму"); return; }
+    setBusy(true);
+    const { error } = await db.from("expenses").insert({
+      spent_on: spentOn,
+      category: cat,
+      amount: amt,
+      note: note.trim() || null
+    });
+    setBusy(false);
+    if (error) { alert("Ошибка: " + error.message); return; }
+    setAmount(""); setNote("");
+    reloadExpenses();
+  };
+
+  const removeExpense = async (e) => {
+    if (!confirm(`Удалить расход «${e.category}» на ${money(e.amount)}?`)) return;
+    await db.from("expenses").delete().eq("id", e.id);
+    reloadExpenses();
+  };
+
+  const quick = (type) => {
+    const n = new Date();
+    if (type === "month") { setFrom(iso(new Date(n.getFullYear(), n.getMonth(), 1))); setTo(iso(n)); }
+    if (type === "prev") {
+      setFrom(iso(new Date(n.getFullYear(), n.getMonth() - 1, 1)));
+      setTo(iso(new Date(n.getFullYear(), n.getMonth(), 0)));
+    }
+    if (type === "year") { setFrom(iso(new Date(n.getFullYear(), 0, 1))); setTo(iso(n)); }
+  };
+
+  return (
+    <>
+      {/* Период */}
+      <div className="rounded-2xl p-5 mb-4 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+        <div className="text-sm font-bold mb-3" style={{ color: C.ink, fontFamily: F.body }}>📅 Период</div>
+        <div className="flex gap-2 mb-2">
+          <input type="date" value={from} onChange={e => setFrom(e.target.value)}
+            className="flex-1 rounded-xl px-3 py-2.5 outline-none text-sm"
+            style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+          <input type="date" value={to} onChange={e => setTo(e.target.value)}
+            className="flex-1 rounded-xl px-3 py-2.5 outline-none text-sm"
+            style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+        </div>
+        <div className="flex gap-2">
+          {[["Этот месяц", "month"], ["Прошлый", "prev"], ["Год", "year"]].map(([l, t]) => (
+            <button key={t} onClick={() => quick(t)}
+              className="flex-1 text-xs font-bold py-2 rounded-lg" style={{ background: C.line + "33", color: C.inkSoft, fontFamily: F.body }}>
+              {l}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Главная цифра */}
+      <div className="rounded-2xl p-5 mb-4" style={{ background: C.ink }}>
+        <div className="text-xs" style={{ color: "#9AA6B5", fontFamily: F.body }}>Прибыль за период</div>
+        <div style={{ fontFamily: F.mono, fontSize: 32, fontWeight: 700, color: profit >= 0 ? "#7FD6A4" : "#FF8A7A" }}>
+          {profit >= 0 ? "+" : ""}{money(profit)}
+        </div>
+        <div className="text-xs mt-1" style={{ color: "#9AA6B5", fontFamily: F.body }}>
+          собрано {money(collected)} − расходы {money(totalCost)}
+        </div>
+      </div>
+
+      {/* Разбивка */}
+      <div className="grid grid-cols-2 gap-2 mb-4">
+        {[
+          ["Выдано посылок", String(inPeriod.length), C.ink],
+          ["Вес", kg.toFixed(1) + " кг", C.ink],
+          ["Начислено", money(revenue), C.ink],
+          ["Собрано", money(collected), C.ready],
+          ["Не оплачено за период", money(debt), debt > 0 ? C.stamp : C.inkSoft],
+          ["Долг всего", money(totalDebt), totalDebt > 0 ? C.stamp : C.inkSoft]
+        ].map(([k, v, col]) => (
+          <div key={k} className="rounded-xl px-3 py-2.5" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+            <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>{k}</div>
+            <div className="text-sm font-bold" style={{ color: col, fontFamily: F.mono }}>{v}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Расходы по категориям */}
+      {Object.keys(byCat).length > 0 && (
+        <div className="rounded-2xl p-4 mb-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+          <div className="text-sm font-bold mb-3" style={{ color: C.ink, fontFamily: F.body }}>Расходы по статьям</div>
+          {Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([k, v]) => (
+            <div key={k} className="mb-2">
+              <div className="flex justify-between text-xs mb-1">
+                <span style={{ color: C.inkSoft, fontFamily: F.body }}>{k}</span>
+                <span style={{ color: C.ink, fontFamily: F.mono, fontWeight: 600 }}>{money(v)}</span>
+              </div>
+              <div className="h-1.5 rounded-full" style={{ background: C.line + "55" }}>
+                <div className="h-1.5 rounded-full" style={{ width: `${totalCost ? (v / totalCost * 100) : 0}%`, background: C.stamp }}></div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Добавить расход */}
+      <div className="rounded-2xl p-5 mb-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+        <div className="text-sm font-bold mb-3" style={{ color: C.ink, fontFamily: F.body }}>➕ Записать расход</div>
+        <div className="flex gap-2 mb-3">
+          <div className="flex-1 relative">
+            <select value={cat} onChange={e => setCat(e.target.value)}
+              className="w-full rounded-xl px-3 py-2.5 pr-8 outline-none text-sm appearance-none"
+              style={{ border: `1.5px solid ${C.line}`, background: C.card, color: C.ink, fontFamily: F.body }}>
+              {EXPENSE_CATS.map(c => <option key={c} value={c} style={{ color: "#14202E", background: "#fff" }}>{c}</option>)}
+            </select>
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-xs" style={{ color: C.inkSoft }}>▼</span>
+          </div>
+          <input type="number" min="0" value={amount} onChange={e => setAmount(e.target.value)} placeholder="сумма ₸"
+            className="flex-1 rounded-xl px-3 py-2.5 outline-none text-sm"
+            style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+        </div>
+        <div className="flex gap-2 mb-3">
+          <input type="date" value={spentOn} onChange={e => setSpentOn(e.target.value)}
+            className="rounded-xl px-3 py-2.5 outline-none text-sm"
+            style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+          <input value={note} onChange={e => setNote(e.target.value)} placeholder="комментарий"
+            className="flex-1 rounded-xl px-3 py-2.5 outline-none text-sm"
+            style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, color: C.ink }} />
+        </div>
+        <button onClick={addExpense} disabled={busy}
+          className="w-full py-3 rounded-xl font-bold text-white transition-all active:scale-[0.98]"
+          style={{ background: C.stamp, fontFamily: F.body, opacity: busy ? 0.6 : 1 }}>
+          {busy ? "Сохранение…" : "Добавить расход"}
+        </button>
+      </div>
+
+      {/* Список расходов периода */}
+      {periodExpenses.length > 0 && (
+        <div className="rounded-2xl p-4 mb-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
+          <div className="text-sm font-bold mb-2" style={{ color: C.ink, fontFamily: F.body }}>Расходы за период</div>
+          {periodExpenses.map(e => (
+            <div key={e.id} className="flex items-center justify-between py-2" style={{ borderTop: `1px solid ${C.line}44` }}>
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-semibold" style={{ color: C.ink, fontFamily: F.body }}>{e.category}</div>
+                <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>
+                  {new Date(e.spent_on).toLocaleDateString("ru-RU")}{e.note ? " · " + e.note : ""}
+                </div>
+              </div>
+              <div className="text-sm font-bold mr-2" style={{ color: C.stamp, fontFamily: F.mono }}>{money(e.amount)}</div>
+              <button onClick={() => removeExpense(e)} className="text-xs px-2 py-1 rounded"
+                style={{ background: C.stamp + "12", color: C.stamp }}>🗑</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="rounded-xl px-4 py-3 mb-4 text-xs" style={{ background: C.paper, color: C.inkSoft, fontFamily: F.body, border: `1px dashed ${C.line}`, lineHeight: 1.6 }}>
+        <b style={{ color: C.ink }}>Как считается.</b> Выручка берётся по дате выдачи посылки клиенту. Прибыль = собранные деньги − расходы за период (включая стоимость партий, отправленных в этом периоде). Если посылка выдана, но не отмечена оплаченной, она попадает в «не оплачено» и не увеличивает прибыль.
+      </div>
     </>
   );
 }
@@ -1945,7 +2399,9 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [scanFeedback, setScanFeedback] = useState(null);
   const [scanCount, setScanCount] = useState(0);
   const [lastScanned, setLastScanned] = useState(null); // для отката последнего скана
-  const [reportMode, setReportMode] = useState("report"); // report | import
+  const [reportMode, setReportMode] = useState("report"); // report | import | finance | batches
+  const [batches, setBatches] = useState([]);
+  const [expenses, setExpenses] = useState([]);
 
   // давно ли делали резервную копию (7+ дней или никогда → предупреждаем)
   const backupWarn = (() => {
@@ -1980,6 +2436,16 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     setClients(c || []);
     setLoading(false);
   };
+
+  const loadBatches = async () => {
+    const { data } = await db.from("batches").select("*").order("sent_date", { ascending: false, nullsFirst: false });
+    setBatches(data || []);
+  };
+  const loadExpenses = async () => {
+    const { data } = await db.from("expenses").select("*").order("spent_on", { ascending: false });
+    setExpenses(data || []);
+  };
+  useEffect(() => { loadBatches(); loadExpenses(); }, []);
   useEffect(() => { load(); }, []);
 
   // Живое обновление: клиент добавил трек — он сразу появился в админке
@@ -2580,10 +3046,10 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
 
         {tab === "reports" && (
           <>
-            <div className="flex gap-2 mb-4">
-              {[["report", "📊 Отчёт"], ["import", "📥 Импорт Excel"]].map(([id, label]) => (
+            <div className="grid grid-cols-2 gap-2 mb-4">
+              {[["report", "📊 Отчёт"], ["import", "📥 Импорт Excel"], ["finance", "💰 Прибыль"], ["batches", "📦 Партии"]].map(([id, label]) => (
                 <button key={id} onClick={() => setReportMode(id)}
-                  className="flex-1 text-xs font-bold py-2.5 rounded-xl transition-all active:scale-95"
+                  className="text-xs font-bold py-2.5 rounded-xl transition-all active:scale-95"
                   style={{
                     background: reportMode === id ? C.ink : C.card,
                     color: reportMode === id ? "#fff" : C.inkSoft,
@@ -2594,9 +3060,10 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                 </button>
               ))}
             </div>
-            {reportMode === "report"
-              ? <ReportsAdmin parcels={parcels} rate={rate} clients={clients} />
-              : <ImportAdmin parcels={parcels} onDone={load} />}
+            {reportMode === "report" && <ReportsAdmin parcels={parcels} rate={rate} clients={clients} />}
+            {reportMode === "import" && <ImportAdmin parcels={parcels} batches={batches} onDone={load} />}
+            {reportMode === "finance" && <FinanceAdmin parcels={parcels} rate={rate} batches={batches} expenses={expenses} reloadExpenses={loadExpenses} />}
+            {reportMode === "batches" && <BatchesAdmin parcels={parcels} rate={rate} batches={batches} reloadBatches={loadBatches} />}
           </>
         )}
 
