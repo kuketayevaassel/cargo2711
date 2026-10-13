@@ -21,6 +21,7 @@
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
   * { -webkit-tap-highlight-color: transparent; }
   body { margin: 0; background: #14202E; overflow-x: hidden; }
@@ -296,6 +297,87 @@ function QRScanner({ onScan, onClose, continuous, feedback, scanCount }) {
   );
 }
 
+// ─── QR-код клиента ─────────────────────────────────────────────
+// В QR кладём код клиента с префиксом, чтобы не путать с трек-номером
+const qrPayload = code => "CARGO2711:" + code;
+
+function ClientQR({ code, name, onClose }) {
+  const boxRef = useRef(null);
+
+  useEffect(() => {
+    if (!boxRef.current || typeof QRCode === "undefined") return;
+    boxRef.current.innerHTML = "";
+    new QRCode(boxRef.current, {
+      text: qrPayload(code),
+      width: 240,
+      height: 240,
+      colorDark: "#14202E",
+      colorLight: "#ffffff",
+      correctLevel: QRCode.CorrectLevel.H
+    });
+  }, [code]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4"
+      style={{ background: "rgba(20,32,46,0.75)", backdropFilter: "blur(8px)" }} onClick={onClose}>
+      <div className="w-full max-w-sm rounded-2xl p-6 text-center slide-up"
+        style={{ background: C.card }} onClick={e => e.stopPropagation()}>
+        <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>
+          Покажите этот код на выдаче
+        </div>
+        <div className="text-xs mb-4" style={{ color: C.inkSoft, fontFamily: F.body }}>
+          Менеджер отсканирует — и сразу увидит все ваши посылки
+        </div>
+
+        <div ref={boxRef} className="flex justify-center mb-4"></div>
+
+        <div style={{ fontFamily: F.mono, fontSize: 28, fontWeight: 600, color: C.ink, letterSpacing: 3 }}>
+          {code}
+        </div>
+        {name && (
+          <div className="text-sm mt-1" style={{ color: C.inkSoft, fontFamily: F.body }}>{name}</div>
+        )}
+
+        <button onClick={onClose}
+          className="w-full py-3 rounded-xl font-bold text-white mt-5 transition-all active:scale-[0.98]"
+          style={{ background: C.ink, fontFamily: F.body }}>
+          Закрыть
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── WhatsApp ───────────────────────────────────────────────────
+// Открывает чат с клиентом и подставляет готовый текст
+function openWhatsApp(phone, text) {
+  const d = (phone || "").replace(/\D/g, "");
+  if (!d) { alert("У клиента не указан телефон"); return; }
+  const intl = d.length === 11 && d[0] === "8" ? "7" + d.slice(1) : d;
+  window.open(`https://wa.me/${intl}?text=${encodeURIComponent(text)}`, "_blank");
+}
+
+function readyMessage(client, list, rate, settings) {
+  const sum = list.reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+  const lines = list.map(p =>
+    `• ${p.track_number}${p.title ? " — " + p.title : ""}${p.weight > 0 ? ` (${Number(p.weight).toFixed(2)} кг — ${priceKZT(p.weight, rate).toLocaleString("ru-RU")} ₸)` : ""}`
+  );
+  return [
+    `Здравствуйте${client.full_name ? ", " + client.full_name : ""}! 👋`,
+    ``,
+    `Ваши посылки прибыли и готовы к выдаче (код ${client.client_code}):`,
+    ...lines,
+    ``,
+    `💰 К оплате: ${sum.toLocaleString("ru-RU")} ₸`,
+    settings?.payment_info ? `💳 ${settings.payment_info}` : "",
+    ``,
+    settings?.pickup_address ? `📍 ${settings.pickup_address}` : "",
+    settings?.pickup_hours ? `🕐 ${settings.pickup_hours}` : "",
+    ``,
+    `cargo_2711`
+  ].filter(Boolean).join("\n");
+}
+
 // ─── Экран входа ──────────────────────────────────────────────
 function Auth() {
   const [mode, setMode] = useState("login");
@@ -508,6 +590,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
   const [showAdd, setShowAdd] = useState(false);
   const [addErr, setAddErr] = useState("");
   const [claimInfo, setClaimInfo] = useState("");
+  const [showQR, setShowQR] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showScanner, setShowScanner] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -660,12 +743,18 @@ function ClientApp({ session, profile, settings, onLogout }) {
           </button>
         </div>
         <div className="mt-3 flex items-end justify-between">
-          <div>
+          <button onClick={() => setShowQR(true)} className="text-left transition-all active:scale-95">
             <div className="text-xs" style={{ color: "#9AA6B5", fontFamily: F.body }}>Ваш код клиента</div>
-            <div style={{ fontFamily: F.mono, color: "#fff", fontSize: 22, fontWeight: 600, letterSpacing: 2 }}>
-              {profile.client_code}
+            <div className="flex items-center gap-2">
+              <span style={{ fontFamily: F.mono, color: "#fff", fontSize: 22, fontWeight: 600, letterSpacing: 2 }}>
+                {profile.client_code}
+              </span>
+              <span className="px-2 py-1 rounded-lg text-xs font-bold"
+                style={{ background: C.stamp, color: "#fff", fontFamily: F.body }}>
+                QR
+              </span>
             </div>
-          </div>
+          </button>
           <div className="text-right">
             <div className="text-xs" style={{ color: "#9AA6B5", fontFamily: F.body }}>Тариф</div>
             <div style={{ fontFamily: F.mono, color: "#fff", fontSize: 15 }}>{rate} ₸/кг</div>
@@ -1022,6 +1111,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
       )}
 
       {showScanner && <QRScanner onScan={handleScan} onClose={() => setShowScanner(false)} />}
+      {showQR && <ClientQR code={profile.client_code} name={profile.full_name} onClose={() => setShowQR(false)} />}
     </div>
   );
 }
@@ -2402,6 +2492,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [reportMode, setReportMode] = useState("report"); // report | import | finance | batches
   const [batches, setBatches] = useState([]);
   const [expenses, setExpenses] = useState([]);
+  const [pickupClient, setPickupClient] = useState(null); // режим выдачи
 
   // давно ли делали резервную копию (7+ дней или никогда → предупреждаем)
   const backupWarn = (() => {
@@ -2556,6 +2647,31 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     load();
   };
 
+  // выдать все готовые посылки клиента одним действием
+  const issueAll = async (list, markPaid) => {
+    if (list.length === 0) return;
+    const sum = list.reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+    const msg = markPaid
+      ? `Выдать ${list.length} посылок и отметить оплату ${money(sum)}?`
+      : `Выдать ${list.length} посылок БЕЗ оплаты?\n\nСумма ${money(sum)} останется в долге.`;
+    if (!confirm(msg)) return;
+
+    let ok = 0, fail = 0;
+    for (const p of list) {
+      const dates = [...(p.status_dates || [null, null, null, null, null, null])];
+      for (let i = p.status + 1; i <= 5; i++) if (!dates[i]) dates[i] = todayStr();
+      const upd = { status: 5, status_dates: dates };
+      if (markPaid) upd.paid = true;
+      const { error } = await db.from("parcels").update(upd).eq("id", p.id);
+      error ? fail++ : ok++;
+    }
+    playBeep(fail === 0);
+    if (navigator.vibrate) navigator.vibrate(150);
+    alert(`✅ Выдано: ${ok}${fail ? `\n❌ Ошибок: ${fail}` : ""}`);
+    await load();
+    setPickupClient(null);
+  };
+
   const adminDelete = async (p) => {
     if (!confirm(`Удалить посылку ${p.track_number}?\n\nОна исчезнет и у клиента ${p.profiles?.client_code || ""}. Это действие нельзя отменить.`)) return;
     const { error } = await db.from("parcels").delete().eq("id", p.id);
@@ -2573,6 +2689,21 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   };
 
   const handleScan = async (decoded) => {
+    // сначала проверяем: это QR клиента?
+    const raw = fixLayout(String(decoded)).toUpperCase();
+    const codeFromQR = raw.startsWith("CARGO2711:")
+      ? raw.slice("CARGO2711:".length).replace(/[^A-Z0-9]/g, "")
+      : null;
+    const asCode = codeFromQR || raw.replace(/[^A-Z0-9]/g, "");
+    const foundClient = clients.find(c => (c.client_code || "").toUpperCase() === asCode);
+    if (foundClient) {
+      playBeep(true);
+      if (navigator.vibrate) navigator.vibrate(120);
+      setShowScanner(false);
+      setPickupClient(foundClient);
+      return;
+    }
+
     const track = extractTrack(decoded);
 
     if (track.length < 6) {
@@ -2846,7 +2977,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
             </div>
 
             <div className="text-xs mb-3 text-center" style={{ color: C.inkSoft, fontFamily: F.body }}>
-              Показано: <b style={{ color: C.ink, fontFamily: F.mono }}>{filteredParcels.length}</b> из {parcels.length} · 📷 камера или USB-сканер в поле поиска
+              Показано: <b style={{ color: C.ink, fontFamily: F.mono }}>{filteredParcels.length}</b> из {parcels.length} · 📷 сканируйте коробку или <b style={{ color: C.ready }}>QR клиента</b> для выдачи
             </div>
 
             {!showScanner && scanFeedback && (
@@ -2985,6 +3116,49 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
 
         {tab === "clients" && (
           <>
+            {/* Рассылка «готово к выдаче» */}
+            {(() => {
+              const readyByClient = {};
+              parcels.filter(p => p.status === 4 && p.client_id).forEach(p => {
+                (readyByClient[p.client_id] = readyByClient[p.client_id] || []).push(p);
+              });
+              const ids = Object.keys(readyByClient);
+              if (ids.length === 0) return null;
+              return (
+                <div className="rounded-2xl p-4 mb-4" style={{ background: C.card, border: `1.5px solid ${C.ready}44` }}>
+                  <div className="text-sm font-bold mb-1" style={{ color: C.ready, fontFamily: F.body }}>
+                    📬 Готовы к выдаче — {ids.length} {ids.length === 1 ? "клиент" : "клиентов"}
+                  </div>
+                  <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                    Нажмите «Написать» — откроется WhatsApp с готовым текстом: список посылок, сумма, адрес и часы работы. Останется нажать «Отправить».
+                  </div>
+                  {ids.map(id => {
+                    const c = clients.find(x => x.id === id);
+                    if (!c) return null;
+                    const list = readyByClient[id];
+                    const sum = list.reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+                    return (
+                      <div key={id} className="flex items-center justify-between py-2" style={{ borderTop: `1px solid ${C.line}44` }}>
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-bold" style={{ color: C.ink, fontFamily: F.body }}>
+                            {c.full_name || "—"} <span style={{ fontFamily: F.mono, color: C.transit }}>{c.client_code}</span>
+                          </div>
+                          <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>
+                            {list.length} шт. · {money(sum)}
+                          </div>
+                        </div>
+                        <button onClick={() => openWhatsApp(c.phone, readyMessage(c, list, rate, settings))}
+                          className="text-xs font-bold px-3 py-2 rounded-lg ml-2 flex-shrink-0 transition-all active:scale-95"
+                          style={{ background: "#25D366", color: "#fff", fontFamily: F.body }}>
+                          💬 Написать
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
             {loading && <div className="text-sm text-center py-8" style={{ color: C.inkSoft, fontFamily: F.body }}>Загрузка…</div>}
             {!loading && clients.length === 0 && (
               <div className="text-sm text-center py-8" style={{ color: C.inkSoft, fontFamily: F.body }}>
@@ -3007,6 +3181,13 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                     </div>
                   </div>
                   <div className="flex flex-col items-end gap-2">
+                    <button
+                      onClick={() => { setPickupClient(c); setTab("parcels"); }}
+                      className="text-xs font-bold px-3 py-1.5 rounded-lg transition-all active:scale-95"
+                      style={{ background: C.ready + "18", color: C.ready, fontFamily: F.body, border: `1px solid ${C.ready}33` }}
+                      title="Экран выдачи">
+                      📤 Выдача
+                    </button>
                     <button
                       onClick={() => {
                         setClientFilter({ id: c.id, code: c.client_code, name: c.full_name });
@@ -3129,6 +3310,128 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
           </button>
         ))}
       </div>
+
+      {/* ─── Окно выдачи клиенту ─── */}
+      {pickupClient && (() => {
+        const mine = parcels.filter(p => p.client_id === pickupClient.id);
+        const ready = mine.filter(p => p.status === 4);
+        const onTheWay = mine.filter(p => p.status >= 1 && p.status <= 3);
+        const sumReady = ready.reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+        const unpaidAll = mine.filter(p => !p.paid && p.weight > 0 && p.status === 5)
+                              .reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+        const noWeight = ready.filter(p => !p.weight || p.weight <= 0).length;
+        return (
+          <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
+            style={{ background: "rgba(20,32,46,0.6)", backdropFilter: "blur(6px)" }}
+            onClick={() => setPickupClient(null)}>
+            <div className="w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5 max-h-[92vh] overflow-y-auto slide-up"
+              style={{ background: C.card }} onClick={e => e.stopPropagation()}>
+
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <div style={{ fontFamily: F.mono, fontSize: 22, fontWeight: 600, color: C.ink, letterSpacing: 2 }}>
+                    {pickupClient.client_code}
+                  </div>
+                  <div className="text-sm" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                    {pickupClient.full_name || "—"}
+                  </div>
+                  <div className="text-xs" style={{ color: C.inkSoft, fontFamily: F.mono }}>
+                    {pickupClient.phone || ""}
+                  </div>
+                </div>
+                <button onClick={() => setPickupClient(null)}
+                  className="w-9 h-9 rounded-full flex items-center justify-center text-lg flex-shrink-0"
+                  style={{ background: C.line + "44", color: C.inkSoft }}>✕</button>
+              </div>
+
+              {/* Сумма */}
+              <div className="rounded-xl p-4 mb-4 text-center" style={{ background: C.ink }}>
+                <div className="text-xs" style={{ color: "#9AA6B5", fontFamily: F.body }}>
+                  К выдаче: {ready.length} {ready.length === 1 ? "посылка" : "посылок"}
+                </div>
+                <div style={{ fontFamily: F.mono, fontSize: 30, fontWeight: 700, color: "#fff" }}>
+                  {money(sumReady)}
+                </div>
+                {unpaidAll > 0 && (
+                  <div className="text-xs mt-1" style={{ color: "#FF8A7A", fontFamily: F.body }}>
+                    + старый долг {money(unpaidAll)}
+                  </div>
+                )}
+              </div>
+
+              {noWeight > 0 && (
+                <div className="rounded-xl px-3 py-2.5 mb-3 text-xs font-bold"
+                  style={{ background: C.gold + "18", color: C.gold, fontFamily: F.body }}>
+                  ⚠️ У {noWeight} посылок не указан вес — сумма посчитана без них
+                </div>
+              )}
+
+              {/* Список к выдаче */}
+              {ready.length > 0 ? (
+                <div className="mb-4">
+                  {ready.map(p => (
+                    <div key={p.id} className="flex items-center justify-between py-2"
+                      style={{ borderBottom: `1px solid ${C.line}44` }}>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-semibold" style={{ fontFamily: F.mono, color: C.ink }}>
+                          {p.track_number}
+                        </div>
+                        <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>
+                          {p.title || "—"}{p.weight > 0 ? ` · ${Number(p.weight).toFixed(2)} кг` : " · вес не указан"}
+                        </div>
+                      </div>
+                      <div className="text-sm font-bold ml-2" style={{ fontFamily: F.mono, color: C.ink }}>
+                        {p.weight > 0 ? money(priceKZT(p.weight, rate)) : "—"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-6 mb-2">
+                  <div className="text-3xl mb-2">📭</div>
+                  <div className="text-sm" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                    Нет посылок со статусом «Готов к выдаче»
+                  </div>
+                  {onTheWay.length > 0 && (
+                    <div className="text-xs mt-2" style={{ color: C.transit, fontFamily: F.body }}>
+                      🚚 В пути: {onTheWay.length} шт.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Действия */}
+              {ready.length > 0 && (
+                <>
+                  <button onClick={() => issueAll(ready, true)}
+                    className="w-full py-3.5 rounded-xl font-bold text-white mb-2 transition-all active:scale-[0.98]"
+                    style={{ background: C.ready, fontFamily: F.body, fontSize: 15 }}>
+                    ✅ Выдать всё и отметить оплату
+                  </button>
+                  <button onClick={() => issueAll(ready, false)}
+                    className="w-full py-3 rounded-xl font-bold mb-2 transition-all active:scale-[0.98]"
+                    style={{ background: "transparent", color: C.stamp, border: `1.5px solid ${C.stamp}55`, fontFamily: F.body }}>
+                    Выдать без оплаты (в долг)
+                  </button>
+                </>
+              )}
+
+              <button
+                onClick={() => openWhatsApp(pickupClient.phone, readyMessage(pickupClient, ready, rate, settings))}
+                className="w-full py-3 rounded-xl font-bold text-white transition-all active:scale-[0.98]"
+                style={{ background: "#25D366", fontFamily: F.body }}>
+                💬 Написать в WhatsApp
+              </button>
+
+              <button onClick={() => { setClientFilter({ id: pickupClient.id, code: pickupClient.client_code, name: pickupClient.full_name }); setPickupClient(null); }}
+                className="w-full py-2.5 rounded-xl text-xs font-bold mt-2"
+                style={{ background: "transparent", color: C.inkSoft, fontFamily: F.body }}>
+                Показать все его посылки ({mine.length}) ›
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ─── Окно: админ добавляет посылку клиенту ─── */}
       {showAdd && (
@@ -3342,7 +3645,10 @@ function SettingsForm({ settings, onSaved }) {
       china_phone: f.china_phone,
       china_region: f.china_region,
       china_street: f.china_street,
-      code_prefix: f.code_prefix
+      code_prefix: f.code_prefix,
+      pickup_address: f.pickup_address,
+      pickup_hours: f.pickup_hours,
+      payment_info: f.payment_info
     }).eq("id", 1);
     setBusy(false);
     if (error) alert(error.message);
@@ -3360,6 +3666,15 @@ function SettingsForm({ settings, onSaved }) {
       <SettingsField label="电话 Телефон" value={f.china_phone} onChange={v => upd("china_phone", v)} />
       <SettingsField label="地区 Регион" value={f.china_region} onChange={v => upd("china_region", v)} />
       <SettingsField label="详细地址 Адрес" value={f.china_street} onChange={v => upd("china_street", v)} />
+
+      <div className="my-4" style={{ borderTop: `2px dashed ${C.line}` }}></div>
+      <div className="text-xs font-bold mb-2" style={{ color: C.inkSoft, fontFamily: F.body }}>
+        📤 Выдача в Казахстане (подставляется в WhatsApp-сообщения)
+      </div>
+      <SettingsField label="Адрес пункта выдачи" value={f.pickup_address} onChange={v => upd("pickup_address", v)} />
+      <SettingsField label="Часы работы" value={f.pickup_hours} onChange={v => upd("pickup_hours", v)} />
+      <SettingsField label="Реквизиты для оплаты" value={f.payment_info} onChange={v => upd("payment_info", v)} />
+
       <button onClick={save} disabled={busy} className="w-full py-3 rounded-xl font-bold text-white mt-2 transition-all active:scale-[0.98]"
         style={{ background: ok ? C.ready : C.stamp, fontFamily: F.body, opacity: busy ? 0.6 : 1 }}>
         {busy ? "Сохранение…" : ok ? "✅ Сохранено" : "💾 Сохранить"}
