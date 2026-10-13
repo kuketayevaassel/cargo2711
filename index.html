@@ -367,9 +367,8 @@ function openWhatsApp(phone, text) {
 }
 
 function readyMessage(client, list, rate, settings) {
-  const sum = list.reduce((s, p) => s + priceKZT(p.weight, rate), 0);
   const lines = list.map(p =>
-    `• ${p.track_number}${p.title ? " — " + p.title : ""}${p.weight > 0 ? ` (${Number(p.weight).toFixed(2)} кг — ${priceKZT(p.weight, rate).toLocaleString("ru-RU")} ₸)` : ""}`
+    `• ${p.track_number}${p.title ? " — " + p.title : ""}${p.weight > 0 ? ` (${Number(p.weight).toFixed(2)} кг)` : ""}`
   );
   return [
     `Здравствуйте${client.full_name ? ", " + client.full_name : ""}! 👋`,
@@ -377,14 +376,10 @@ function readyMessage(client, list, rate, settings) {
     `Ваши посылки прибыли и готовы к выдаче (код ${client.client_code}):`,
     ...lines,
     ``,
-    `💰 К оплате: ${sum.toLocaleString("ru-RU")} ₸`,
-    settings?.payment_info ? `💳 ${settings.payment_info}` : "",
-    ``,
-    settings?.pickup_address ? `📍 ${settings.pickup_address}` : "",
-    settings?.pickup_hours ? `🕐 ${settings.pickup_hours}` : "",
+    `⏳ Бесплатное хранение — не более 7 дней.`,
     ``,
     `cargo_2711`
-  ].filter(Boolean).join("\n");
+  ].join("\n");
 }
 
 // ─── Экран входа ──────────────────────────────────────────────
