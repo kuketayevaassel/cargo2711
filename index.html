@@ -102,13 +102,22 @@ const shortTrack = t => t && t.length > 8 ? t.slice(0, 4) + "…" + t.slice(-4) 
 
 // USB-сканер печатает как клавиатура: при русской раскладке Y превращается в Н,
 // T в Е и т.д. Возвращаем кириллицу обратно в латиницу по позициям клавиш.
+// Буквы одинаковы в обоих регистрах, а знаки препинания зависят от Shift:
+// строчная «ж» даёт ";", заглавная «Ж» (Shift+ж) даёт ":"
 const RU_TO_EN = {
-  "Й":"Q","Ц":"W","У":"E","К":"R","Е":"T","Н":"Y","Г":"U","Ш":"I","Щ":"O","З":"P","Х":"[","Ъ":"]",
-  "Ф":"A","Ы":"S","В":"D","А":"F","П":"G","Р":"H","О":"J","Л":"K","Д":"L","Ж":";","Э":"'",
-  "Я":"Z","Ч":"X","С":"C","М":"V","И":"B","Т":"N","Ь":"M","Б":",","Ю":"."
+  "Й":"Q","Ц":"W","У":"E","К":"R","Е":"T","Н":"Y","Г":"U","Ш":"I","Щ":"O","З":"P",
+  "Ф":"A","Ы":"S","В":"D","А":"F","П":"G","Р":"H","О":"J","Л":"K","Д":"L",
+  "Я":"Z","Ч":"X","С":"C","М":"V","И":"B","Т":"N","Ь":"M"
 };
+const RU_PUNCT_LOWER = { "х":"[", "ъ":"]", "ж":";", "э":"'", "б":",", "ю":"." };
+const RU_PUNCT_UPPER = { "Х":"{", "Ъ":"}", "Ж":":", "Э":'"', "Б":"<", "Ю":">" };
+
 function fixLayout(s) {
-  return String(s).replace(/[А-ЯЁа-яё]/g, ch => RU_TO_EN[ch.toUpperCase()] || ch);
+  return String(s).replace(/[А-ЯЁа-яё]/g, ch => {
+    if (RU_PUNCT_UPPER[ch]) return RU_PUNCT_UPPER[ch];
+    if (RU_PUNCT_LOWER[ch]) return RU_PUNCT_LOWER[ch];
+    return RU_TO_EN[ch.toUpperCase()] || ch;
+  });
 }
 
 // Извлечь трек-номер из результата сканирования
@@ -2689,13 +2698,15 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   };
 
   const handleScan = async (decoded) => {
-    // сначала проверяем: это QR клиента?
-    const raw = fixLayout(String(decoded)).toUpperCase();
-    const codeFromQR = raw.startsWith("CARGO2711:")
-      ? raw.slice("CARGO2711:".length).replace(/[^A-Z0-9]/g, "")
-      : null;
-    const asCode = codeFromQR || raw.replace(/[^A-Z0-9]/g, "");
-    const foundClient = clients.find(c => (c.client_code || "").toUpperCase() === asCode);
+    // Это QR клиента? Разделитель и раскладка значения не имеют:
+    // «CARGO2711:AG6892», «СФКПЩ2711ЖФП6892», «cargo2711 ag6892» — всё распознаётся.
+    const flat = fixLayout(String(decoded)).toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const afterPrefix = flat.startsWith("CARGO2711") ? flat.slice("CARGO2711".length) : null;
+    const asCode = afterPrefix || flat;
+    const foundClient = clients.find(c => {
+      const cc = (c.client_code || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+      return cc && cc === asCode;
+    });
     if (foundClient) {
       playBeep(true);
       if (navigator.vibrate) navigator.vibrate(120);
