@@ -175,6 +175,25 @@ function useNewsRealtime(onChange) {
   }, []);
 }
 
+// Состояние, которое переживает уход со страницы и возврат.
+// Нужно для форм: если переключиться на другую вкладку и вернуться,
+// мобильный браузер может выгрузить страницу из памяти.
+function useSticky(key, initial) {
+  const [val, setVal] = useState(() => {
+    try {
+      const raw = localStorage.getItem("cargo2711_" + key);
+      return raw === null ? initial : JSON.parse(raw);
+    } catch(_) { return initial; }
+  });
+  useEffect(() => {
+    try { localStorage.setItem("cargo2711_" + key, JSON.stringify(val)); } catch(_) {}
+  }, [key, val]);
+  const clear = () => {
+    try { localStorage.removeItem("cargo2711_" + key); } catch(_) {}
+  };
+  return [val, setVal, clear];
+}
+
 // «02.05.2026, 14:30»
 function newsDate(iso) {
   const d = new Date(iso);
@@ -644,7 +663,7 @@ function Waybill({ parcel, rate, onBack, onDelete, onTogglePack }) {
 
 // ─── Кабинет клиента ────────────────────────────────────────────
 function ClientApp({ session, profile, settings, onLogout }) {
-  const [tab, setTab] = useState("parcels");
+  const [tab, setTab] = useSticky("client_tab", "parcels");
   const [parcels, setParcels] = useState([]);
   const [sel, setSel] = useState(null);
   const [newTrack, setNewTrack] = useState("");
@@ -1984,17 +2003,24 @@ function ImportAdmin({ parcels, batches, onDone }) {
 const money = n => Math.round(n || 0).toLocaleString("ru-RU") + " ₸";
 
 function BatchesAdmin({ parcels, rate, batches, reloadBatches }) {
-  const [name, setName] = useState("");
-  const [sentDate, setSentDate] = useState("");
-  const [freight, setFreight] = useState("");
-  const [other, setOther] = useState("");
-  const [weight, setWeight] = useState("");
-  const [editId, setEditId] = useState(null);
+  // черновик формы сохраняется: ушли со страницы и вернулись — данные на месте
+  const [draft, setDraft, clearDraft] = useSticky("batch_draft", {
+    name: "", sentDate: "", freight: "", other: "", weight: "", editId: null
+  });
+  const { name, sentDate, freight, other, weight, editId } = draft;
+  const upd = (k, v) => setDraft(d => ({ ...d, [k]: v }));
+  const setName = v => upd("name", v);
+  const setSentDate = v => upd("sentDate", v);
+  const setFreight = v => upd("freight", v);
+  const setOther = v => upd("other", v);
+  const setWeight = v => upd("weight", v);
+
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(null);   // раскрытая партия
 
   const reset = () => {
-    setName(""); setSentDate(""); setFreight(""); setOther(""); setWeight(""); setEditId(null);
+    setDraft({ name: "", sentDate: "", freight: "", other: "", weight: "", editId: null });
+    clearDraft();
   };
 
   const save = async () => {
@@ -2017,12 +2043,14 @@ function BatchesAdmin({ parcels, rate, batches, reloadBatches }) {
   };
 
   const startEdit = (b) => {
-    setEditId(b.id);
-    setName(b.name);
-    setSentDate(b.sent_date || "");
-    setFreight(String(b.freight_cost || ""));
-    setOther(String(b.other_cost || ""));
-    setWeight(String(b.weight_kg || ""));
+    setDraft({
+      editId: b.id,
+      name: b.name,
+      sentDate: b.sent_date || "",
+      freight: String(b.freight_cost || ""),
+      other: String(b.other_cost || ""),
+      weight: String(b.weight_kg || "")
+    });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -2208,10 +2236,14 @@ function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses }) {
 
   const [from, setFrom] = useState(iso(firstDay));
   const [to, setTo] = useState(iso(today));
-  const [cat, setCat] = useState(EXPENSE_CATS[0]);
-  const [amount, setAmount] = useState("");
-  const [note, setNote] = useState("");
-  const [spentOn, setSpentOn] = useState(iso(today));
+  const [expDraft, setExpDraft, clearExpDraft] = useSticky("expense_draft", {
+    cat: EXPENSE_CATS[0], amount: "", note: "", spentOn: iso(today)
+  });
+  const { cat, amount, note, spentOn } = expDraft;
+  const setCat = v => setExpDraft(d => ({ ...d, cat: v }));
+  const setAmount = v => setExpDraft(d => ({ ...d, amount: v }));
+  const setNote = v => setExpDraft(d => ({ ...d, note: v }));
+  const setSpentOn = v => setExpDraft(d => ({ ...d, spentOn: v }));
   const [busy, setBusy] = useState(false);
 
   const fromD = from ? new Date(from + "T00:00:00") : null;
@@ -2272,7 +2304,8 @@ function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses }) {
     });
     setBusy(false);
     if (error) { alert("Ошибка: " + error.message); return; }
-    setAmount(""); setNote("");
+    setExpDraft(d => ({ ...d, amount: "", note: "" }));
+    clearExpDraft();
     reloadExpenses();
   };
 
@@ -2571,7 +2604,7 @@ function BackupAdmin({ rate }) {
 
 // ─── Админка ─────────────────────────────────────────────────────
 function AdminApp({ settings, reloadSettings, onLogout }) {
-  const [tab, setTab] = useState("parcels");
+  const [tab, setTab] = useSticky("admin_tab", "parcels");
   const [parcels, setParcels] = useState([]);
   const [clients, setClients] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -2582,7 +2615,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [scanFeedback, setScanFeedback] = useState(null);
   const [scanCount, setScanCount] = useState(0);
   const [lastScanned, setLastScanned] = useState(null); // для отката последнего скана
-  const [reportMode, setReportMode] = useState("report"); // report | import | finance | batches
+  const [reportMode, setReportMode] = useSticky("report_mode", "report"); // report | import | finance | batches
   const [batches, setBatches] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [pickupClient, setPickupClient] = useState(null); // режим выдачи
@@ -3858,18 +3891,36 @@ function App() {
     setProfile(data);
   };
 
+  // id пользователя, под которым приложение уже загружено
+  const loadedUserRef = useRef(null);
+
   useEffect(() => {
     db.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: sub } = db.auth.onAuthStateChange((_e, s) => setSession(s));
+    const { data: sub } = db.auth.onAuthStateChange((event, s) => {
+      // Возврат на вкладку обновляет токен (TOKEN_REFRESHED) — пользователь тот же.
+      // Если на это реагировать, приложение перезагрузится и потеряет введённые данные.
+      const sameUser = s?.user?.id && s.user.id === loadedUserRef.current;
+      if (sameUser) return;
+      setSession(s);
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
     if (session === undefined) return;
-    if (!session) { setReady(true); setProfile(null); return; }
+    if (!session) { setReady(true); setProfile(null); loadedUserRef.current = null; return; }
+    // уже загружены под этим пользователем — ничего не трогаем
+    if (loadedUserRef.current === session.user.id) { setReady(true); return; }
     setReady(false);
-    Promise.all([loadProfile(session.user.id), loadSettings()]).then(() => setReady(true));
-  }, [session]);
+    Promise.all([loadProfile(session.user.id), loadSettings()])
+      .catch(e => console.error("Ошибка загрузки:", e))
+      .finally(() => {
+        loadedUserRef.current = session.user.id;
+        setReady(true);   // снимаем экран загрузки в любом случае
+      });
+    // три разных состояния: ещё проверяем / не вошёл / вошёл как конкретный пользователь.
+    // Без этого "не вошёл" и "проверяем" дают одно значение, и экран загрузки не снимается.
+  }, [session === undefined ? "init" : session === null ? "signed_out" : session.user.id]);
 
   if (session === undefined || !ready) {
     return (
