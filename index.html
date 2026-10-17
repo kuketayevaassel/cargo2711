@@ -194,6 +194,15 @@ function useSticky(key, initial) {
   return [val, setVal, clear];
 }
 
+// Когда админ последний раз смотрел список клиентов — чтобы подсветить новых
+const LAST_CLIENTS_KEY = "cargo2711_last_clients_seen";
+const getLastSeenClients = () => {
+  try { return Number(localStorage.getItem(LAST_CLIENTS_KEY) || 0); } catch(_) { return 0; }
+};
+const markClientsSeen = () => {
+  try { localStorage.setItem(LAST_CLIENTS_KEY, String(Date.now())); } catch(_) {}
+};
+
 // «02.05.2026, 14:30»
 function newsDate(iso) {
   const d = new Date(iso);
@@ -673,6 +682,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
   const [claimInfo, setClaimInfo] = useState("");
   const [showQR, setShowQR] = useState(false);
   const [newPack, setNewPack] = useState(false);
+  const [showArchive, setShowArchive] = useState(false);
   const [loading, setLoading] = useState(true);
   const [showScanner, setShowScanner] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -818,10 +828,14 @@ function ClientApp({ session, profile, settings, onLogout }) {
     setTimeout(() => setCopied(false), 1500);
   };
 
-  const filteredParcels = parcels.filter(p =>
+  const searched = parcels.filter(p =>
     p.track_number.toLowerCase().includes(searchQuery.toLowerCase()) ||
     (p.title && p.title.toLowerCase().includes(searchQuery.toLowerCase()))
   );
+  // выданные уезжают в архив, чтобы не мешать активным
+  const activeParcels = searched.filter(p => p.status < 5);
+  const archivedParcels = searched.filter(p => p.status === 5);
+  const filteredParcels = showArchive ? archivedParcels : activeParcels;
 
   const selP = parcels.find(p => p.id === sel);
 
@@ -897,7 +911,7 @@ function ClientApp({ session, profile, settings, onLogout }) {
                 </div>
               )}
 
-              <div className="mb-4">
+              <div className="mb-3">
                 <input
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
@@ -905,6 +919,21 @@ function ClientApp({ session, profile, settings, onLogout }) {
                   className="w-full rounded-xl px-4 py-2.5 outline-none text-sm"
                   style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, background: C.card, color: C.ink }}
                 />
+              </div>
+
+              <div className="flex gap-2 mb-4">
+                {[[false, "📦 Активные", activeParcels.length], [true, "🗂 Архив", archivedParcels.length]].map(([v, label, cnt]) => (
+                  <button key={label} onClick={() => setShowArchive(v)}
+                    className="flex-1 text-xs font-bold py-2 rounded-xl transition-all active:scale-95"
+                    style={{
+                      background: showArchive === v ? C.ink : C.card,
+                      color: showArchive === v ? "#fff" : C.inkSoft,
+                      border: `1.5px solid ${showArchive === v ? C.ink : C.line}`,
+                      fontFamily: F.body
+                    }}>
+                    {label} <span style={{ fontFamily: F.mono, opacity: 0.75 }}>{cnt}</span>
+                  </button>
+                ))}
               </div>
 
               {loading && (
@@ -918,7 +947,9 @@ function ClientApp({ session, profile, settings, onLogout }) {
                 <div className="text-center py-12">
                   <div className="text-5xl mb-4">📭</div>
                   <div className="text-sm" style={{ color: C.inkSoft, fontFamily: F.body }}>
-                    {searchQuery ? "Ничего не найдено" : "Пока нет посылок. Добавьте трек-номер сверху."}
+                    {searchQuery ? "Ничего не найдено"
+                      : showArchive ? "В архиве пока пусто — сюда попадают выданные посылки"
+                      : "Пока нет посылок. Добавьте трек-номер сверху."}
                   </div>
                 </div>
               )}
@@ -2733,6 +2764,13 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [batches, setBatches] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [pickupClient, setPickupClient] = useState(null); // режим выдачи
+  const [adminArchive, setAdminArchive] = useState(false); // показывать выданные
+
+  // новые клиенты с прошлого просмотра — для значка на вкладке
+  const newClientsCount = (() => {
+    const last = getLastSeenClients();
+    return clients.filter(c => c.created_at && new Date(c.created_at).getTime() > last).length;
+  })();
 
   // давно ли делали резервную копию (7+ дней или никогда → предупреждаем)
   const backupWarn = (() => {
@@ -3091,7 +3129,12 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     (p.profiles?.client_code || "").toLowerCase().includes(q) ||
     (p.title || "").toLowerCase().includes(q);
 
-  const filteredParcels = parcels
+  // выданные посылки живут в архиве и не мешают работе со списком
+  const scopeParcels = parcels.filter(p => adminArchive ? p.status === 5 : p.status < 5);
+  const archiveCount = parcels.filter(p => p.status === 5).length;
+  const activeCount = parcels.length - archiveCount;
+
+  const filteredParcels = scopeParcels
     .filter(p => !clientFilter || p.client_id === clientFilter.id)
     .filter(activeFilter.test)
     .filter(matches);
@@ -3240,6 +3283,22 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               </div>
             )}
 
+            {/* Активные / Архив */}
+            <div className="flex gap-2 mb-3">
+              {[[false, "📦 В работе", activeCount], [true, "🗂 Архив (выданные)", archiveCount]].map(([v, label, cnt]) => (
+                <button key={label} onClick={() => { setAdminArchive(v); setStatusFilter("all"); }}
+                  className="flex-1 text-xs font-bold py-2 rounded-xl transition-all active:scale-95"
+                  style={{
+                    background: adminArchive === v ? C.ink : C.card,
+                    color: adminArchive === v ? "#fff" : C.inkSoft,
+                    border: `1.5px solid ${adminArchive === v ? C.ink : C.line}`,
+                    fontFamily: F.body
+                  }}>
+                  {label} <span style={{ fontFamily: F.mono, opacity: 0.75 }}>{cnt}</span>
+                </button>
+              ))}
+            </div>
+
             {/* Отбор по статусу — выпадающий список */}
             <div className="relative mb-3">
               <select
@@ -3254,7 +3313,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                 }}
               >
                 {ADMIN_FILTERS.map(f => {
-                  const cnt = parcels
+                  const cnt = scopeParcels
                     .filter(p => !clientFilter || p.client_id === clientFilter.id)
                     .filter(matches)
                     .filter(f.test).length;
@@ -3270,7 +3329,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
             </div>
 
             <div className="text-xs mb-3 text-center" style={{ color: C.inkSoft, fontFamily: F.body }}>
-              Показано: <b style={{ color: C.ink, fontFamily: F.mono }}>{filteredParcels.length}</b> из {parcels.length} · 📷 сканируйте коробку или <b style={{ color: C.ready }}>QR клиента</b> для выдачи
+              Показано: <b style={{ color: C.ink, fontFamily: F.mono }}>{filteredParcels.length}</b> из {scopeParcels.length} · 📷 сканируйте коробку или <b style={{ color: C.ready }}>QR клиента</b> для выдачи
             </div>
 
             {!showScanner && scanFeedback && (
@@ -3367,6 +3426,9 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
                     <span className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none"
                       style={{ fontSize: 8, color: STATUSES[p.status].color }}>▼</span>
                   </div>
+                  <span className="text-xs" style={{ fontFamily: F.mono, color: C.inkSoft }}>
+                    {(p.status_dates || [])[p.status] || "—"}
+                  </span>
                   {p.paid && <span className="text-xs" style={{ color: C.ready }}>✅</span>}
                   {p.need_packaging && (
                     <span className="text-xs font-bold px-2 py-0.5 rounded-full"
@@ -3420,6 +3482,86 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
 
         {tab === "clients" && (
           <>
+            {/* Новые клиенты */}
+            {(() => {
+              const now = new Date();
+              const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+              const weekAgo = new Date(startOfDay); weekAgo.setDate(weekAgo.getDate() - 6);
+              const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+              const reg = d => d?.created_at ? new Date(d.created_at) : null;
+
+              const today = clients.filter(c => { const d = reg(c); return d && d >= startOfDay; });
+              const week = clients.filter(c => { const d = reg(c); return d && d >= weekAgo; });
+              const month = clients.filter(c => { const d = reg(c); return d && d >= monthStart; });
+
+              // по дням за последние 7 дней
+              const days = [];
+              for (let i = 6; i >= 0; i--) {
+                const d = new Date(startOfDay); d.setDate(d.getDate() - i);
+                const next = new Date(d); next.setDate(next.getDate() + 1);
+                const cnt = clients.filter(c => { const r = reg(c); return r && r >= d && r < next; }).length;
+                days.push({ d, cnt });
+              }
+              const maxCnt = Math.max(1, ...days.map(x => x.cnt));
+              const lastSeen = getLastSeenClients();
+              const fresh = clients.filter(c => { const d = reg(c); return d && d.getTime() > lastSeen; });
+
+              return (
+                <div className="rounded-2xl p-4 mb-4" style={{ background: C.card, border: `1.5px solid ${fresh.length ? C.transit + "66" : C.line}` }}>
+                  {fresh.length > 0 && (
+                    <div className="rounded-xl px-3 py-2.5 mb-3 flex items-center justify-between"
+                      style={{ background: C.transit + "15" }}>
+                      <div className="text-xs font-bold" style={{ color: C.transit, fontFamily: F.body }}>
+                        🎉 Новых клиентов с прошлого захода: {fresh.length}
+                      </div>
+                      <button onClick={() => { markClientsSeen(); load(); }}
+                        className="text-xs font-bold px-2 py-1 rounded-lg"
+                        style={{ background: C.transit, color: "#fff", fontFamily: F.body }}>
+                        ОК
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="text-sm font-bold mb-3" style={{ color: C.ink, fontFamily: F.body }}>
+                    👥 Регистрации
+                  </div>
+
+                  <div className="grid grid-cols-4 gap-2 mb-4">
+                    {[
+                      ["Сегодня", today.length],
+                      ["7 дней", week.length],
+                      ["Месяц", month.length],
+                      ["Всего", clients.length]
+                    ].map(([k, v]) => (
+                      <div key={k} className="rounded-lg px-2 py-2 text-center" style={{ background: C.paper }}>
+                        <div className="text-lg font-bold" style={{ color: C.ink, fontFamily: F.mono }}>{v}</div>
+                        <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>{k}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* График по дням */}
+                  <div className="flex items-end justify-between gap-1" style={{ height: 70 }}>
+                    {days.map(({ d, cnt }, i) => (
+                      <div key={i} className="flex-1 flex flex-col items-center justify-end h-full">
+                        <div style={{ fontSize: 10, color: cnt ? C.ink : C.inkSoft, fontFamily: F.mono, marginBottom: 2 }}>
+                          {cnt || ""}
+                        </div>
+                        <div className="w-full rounded-t"
+                          style={{
+                            height: `${Math.max(3, (cnt / maxCnt) * 45)}px`,
+                            background: cnt ? C.transit : C.line
+                          }}></div>
+                        <div style={{ fontSize: 9, color: C.inkSoft, fontFamily: F.body, marginTop: 3 }}>
+                          {d.toLocaleDateString("ru-RU", { weekday: "short" })}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Рассылка «готово к выдаче» */}
             {(() => {
               const readyByClient = {};
@@ -3609,7 +3751,15 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               fontFamily: F.body,
               borderTop: tab === id ? `3px solid ${C.stamp}` : "3px solid transparent"
             }}>
-            <div className="text-lg">{icon}</div>
+            <div className="text-lg relative inline-block">
+              {icon}
+              {id === "clients" && newClientsCount > 0 && (
+                <span className="absolute -top-1 -right-2 min-w-[16px] h-4 px-1 rounded-full flex items-center justify-center"
+                  style={{ background: C.transit, color: "#fff", fontSize: 10, fontWeight: 700, fontFamily: F.body }}>
+                  {newClientsCount}
+                </span>
+              )}
+            </div>
             <div style={{ fontSize: 10, fontWeight: 600 }}>{label}</div>
           </button>
         ))}
