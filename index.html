@@ -2374,7 +2374,7 @@ function BatchesAdmin({ parcels, rate, batches, reloadBatches, reloadParcels }) 
 // ─── Финансы за период ──────────────────────────────────────────
 const EXPENSE_CATS = ["Перевозка", "Аренда", "Зарплата", "Таможня", "Реклама", "Прочее"];
 
-function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses }) {
+function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses, capital, reloadCapital }) {
   const today = new Date();
   const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
   const iso = d => d.toISOString().slice(0, 10);
@@ -2437,6 +2437,18 @@ function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses }) {
   periodExpenses.forEach(e => { byCat[e.category] = (byCat[e.category] || 0) + (Number(e.amount) || 0); });
   if (batchCost > 0) byCat["Партии (перевозка)"] = (byCat["Партии (перевозка)"] || 0) + batchCost;
 
+  // ─── Касса: считаем за всю историю, а не за период ───
+  const collectedAll = parcels.filter(p => p.paid).reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+  const expensesAll = (expenses || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const batchesAll = (batches || []).reduce((s, b) => s + (Number(b.freight_cost) || 0) + (Number(b.other_cost) || 0), 0);
+  const costAll = expensesAll + batchesAll;
+  const investIn = (capital || []).filter(c => c.kind === "in").reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  const investOut = (capital || []).filter(c => c.kind === "out").reduce((s, c) => s + (Number(c.amount) || 0), 0);
+  // сколько денег физически должно быть на руках
+  const cash = investIn - investOut + collectedAll - costAll;
+  // сколько ваших личных денег ещё не вернулось
+  const ownLeft = Math.max(0, investIn - investOut - Math.max(0, collectedAll - costAll));
+
   const addExpense = async () => {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) { alert("Введите сумму"); return; }
@@ -2458,6 +2470,34 @@ function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses }) {
     if (!confirm(`Удалить расход «${e.category}» на ${money(e.amount)}?`)) return;
     await db.from("expenses").delete().eq("id", e.id);
     reloadExpenses();
+  };
+
+  // ─── Вложения и изъятия ───
+  const [capAmount, setCapAmount] = useState("");
+  const [capNote, setCapNote] = useState("");
+  const [capDate, setCapDate] = useState(iso(today));
+  const [capBusy, setCapBusy] = useState(false);
+
+  const addCapital = async (kind) => {
+    const amt = parseFloat(capAmount);
+    if (!amt || amt <= 0) { alert("Введите сумму"); return; }
+    setCapBusy(true);
+    const { error } = await db.from("capital").insert({
+      happened_on: capDate,
+      kind,
+      amount: amt,
+      note: capNote.trim() || null
+    });
+    setCapBusy(false);
+    if (error) { alert("Ошибка: " + error.message); return; }
+    setCapAmount(""); setCapNote("");
+    reloadCapital();
+  };
+
+  const removeCapital = async (c) => {
+    if (!confirm(`Удалить запись на ${money(c.amount)}?`)) return;
+    await db.from("capital").delete().eq("id", c.id);
+    reloadCapital();
   };
 
   const quick = (type) => {
@@ -2590,8 +2630,88 @@ function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses }) {
         </div>
       )}
 
+      {/* ─── Касса и собственные вложения ─── */}
+      <div className="rounded-2xl p-5 mb-4" style={{ background: C.card, border: `1.5px solid ${C.gold}44` }}>
+        <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>💼 Касса и ваши вложения</div>
+        <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+          Деньги, вложенные из своего кармана, — это не расход. Они не уменьшают прибыль, а пополняют кассу.
+        </div>
+
+        <div className="rounded-xl px-4 py-3 mb-3 text-center" style={{ background: C.ink }}>
+          <div className="text-xs" style={{ color: "#9AA6B5", fontFamily: F.body }}>Должно быть денег на руках</div>
+          <div style={{ fontFamily: F.mono, fontSize: 26, fontWeight: 700, color: cash >= 0 ? "#fff" : "#FF8A7A" }}>
+            {money(cash)}
+          </div>
+          <div style={{ fontSize: 10, color: "#9AA6B5", fontFamily: F.body }}>
+            вложено {money(investIn)} − изъято {money(investOut)} + собрано {money(collectedAll)} − расходы {money(costAll)}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          {[
+            ["Вложено всего", money(investIn), C.transit],
+            ["Изъято", money(investOut), C.inkSoft],
+            ["Ваших не вернулось", money(ownLeft), ownLeft > 0 ? C.gold : C.ready]
+          ].map(([k, v, col]) => (
+            <div key={k} className="rounded-lg px-2 py-2" style={{ background: C.paper }}>
+              <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>{k}</div>
+              <div className="text-xs font-bold" style={{ color: col, fontFamily: F.mono }}>{v}</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex gap-2 mb-2">
+          <input type="number" min="0" value={capAmount} onChange={e => setCapAmount(e.target.value)} placeholder="сумма ₸"
+            className="flex-1 rounded-xl px-3 py-2.5 outline-none text-sm"
+            style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+          <input type="date" value={capDate} onChange={e => setCapDate(e.target.value)}
+            className="rounded-xl px-3 py-2.5 outline-none text-sm"
+            style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+        </div>
+        <input value={capNote} onChange={e => setCapNote(e.target.value)} placeholder="комментарий (например: на первую партию)"
+          className="w-full rounded-xl px-3 py-2.5 mb-2 outline-none text-sm"
+          style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, color: C.ink }} />
+        <div className="flex gap-2">
+          <button onClick={() => addCapital("in")} disabled={capBusy}
+            className="flex-1 py-3 rounded-xl font-bold text-white transition-all active:scale-[0.98]"
+            style={{ background: C.transit, fontFamily: F.body, opacity: capBusy ? 0.6 : 1 }}>
+            ↓ Вложил свои
+          </button>
+          <button onClick={() => addCapital("out")} disabled={capBusy}
+            className="flex-1 py-3 rounded-xl font-bold transition-all active:scale-[0.98]"
+            style={{ background: "transparent", color: C.stamp, border: `1.5px solid ${C.stamp}55`, fontFamily: F.body, opacity: capBusy ? 0.6 : 1 }}>
+            ↑ Забрал себе
+          </button>
+        </div>
+
+        {(capital || []).length > 0 && (
+          <div className="mt-3 max-h-48 overflow-y-auto">
+            {capital.map(c => (
+              <div key={c.id} className="flex items-center justify-between py-2" style={{ borderTop: `1px solid ${C.line}44` }}>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-semibold" style={{ color: c.kind === "in" ? C.transit : C.stamp, fontFamily: F.body }}>
+                    {c.kind === "in" ? "↓ Вложение" : "↑ Изъятие"}
+                  </div>
+                  <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>
+                    {new Date(c.happened_on).toLocaleDateString("ru-RU")}{c.note ? " · " + c.note : ""}
+                  </div>
+                </div>
+                <div className="text-sm font-bold mr-2" style={{ color: c.kind === "in" ? C.transit : C.stamp, fontFamily: F.mono }}>
+                  {c.kind === "in" ? "+" : "−"}{money(c.amount)}
+                </div>
+                <button onClick={() => removeCapital(c)} className="text-xs px-2 py-1 rounded"
+                  style={{ background: C.line + "44", color: C.inkSoft }}>🗑</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       <div className="rounded-xl px-4 py-3 mb-4 text-xs" style={{ background: C.paper, color: C.inkSoft, fontFamily: F.body, border: `1px dashed ${C.line}`, lineHeight: 1.6 }}>
         <b style={{ color: C.ink }}>Как считается.</b> Выручка берётся по дате выдачи посылки клиенту. Прибыль = собранные деньги − расходы за период (включая стоимость партий, отправленных в этом периоде). Если посылка выдана, но не отмечена оплаченной, она попадает в «не оплачено» и не увеличивает прибыль.
+        <div className="mt-2">
+          <b style={{ color: C.ink }}>Прибыль и касса — разное.</b> Прибыль показывает, заработали ли вы на услуге. Касса — сколько денег физически есть. Прибыль может быть большой, а касса пустой, если всё ушло в новую партию.
+        </div>
       </div>
     </>
   );
@@ -2763,6 +2883,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const [reportMode, setReportMode] = useSticky("report_mode", "report"); // report | import | finance | batches
   const [batches, setBatches] = useState([]);
   const [expenses, setExpenses] = useState([]);
+  const [capital, setCapital] = useState([]);
   const [pickupClient, setPickupClient] = useState(null); // режим выдачи
   const [adminArchive, setAdminArchive] = useState(false); // показывать выданные
 
@@ -2814,7 +2935,11 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     const { data } = await db.from("expenses").select("*").order("spent_on", { ascending: false });
     setExpenses(data || []);
   };
-  useEffect(() => { loadBatches(); loadExpenses(); }, []);
+  const loadCapital = async () => {
+    const { data } = await db.from("capital").select("*").order("happened_on", { ascending: false });
+    setCapital(data || []);
+  };
+  useEffect(() => { loadBatches(); loadExpenses(); loadCapital(); }, []);
   useEffect(() => { load(); }, []);
 
   // Живое обновление: клиент добавил трек — он сразу появился в админке
@@ -3689,7 +3814,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
             </div>
             {reportMode === "report" && <ReportsAdmin parcels={parcels} rate={rate} clients={clients} />}
             {reportMode === "import" && <ImportAdmin parcels={parcels} batches={batches} onDone={load} />}
-            {reportMode === "finance" && <FinanceAdmin parcels={parcels} rate={rate} batches={batches} expenses={expenses} reloadExpenses={loadExpenses} />}
+            {reportMode === "finance" && <FinanceAdmin parcels={parcels} rate={rate} batches={batches} expenses={expenses} reloadExpenses={loadExpenses} capital={capital} reloadCapital={loadCapital} />}
             {reportMode === "batches" && <BatchesAdmin parcels={parcels} rate={rate} batches={batches} reloadBatches={loadBatches} reloadParcels={load} />}
           </>
         )}
