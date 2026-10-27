@@ -1755,9 +1755,36 @@ function ReportsAdmin({ parcels, rate, clients }) {
 }
 
 // ─── Импорт списка из Excel (сверка отправки со склада) ─────────
-function ImportAdmin({ parcels, batches, onDone }) {
+function ImportAdmin({ parcels, batches, onDone, reloadBatches }) {
   const [stage, setStage] = useState(2);     // какой статус присвоить (по умолчанию «Отправлен из Китая»)
-  const [batchId, setBatchId] = useState(""); // в какую партию положить
+  const [batchId, setBatchId] = useState("new"); // "new" | "" | id существующей
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const [newBatchName, setNewBatchName] = useState(
+    "Партия " + new Date().toLocaleDateString("ru-RU")
+  );
+  const [newBatchDate, setNewBatchDate] = useState(todayISO);
+  const [newBatchFreight, setNewBatchFreight] = useState("");
+  const [newBatchWeight, setNewBatchWeight] = useState("");
+
+  // создаёт партию при необходимости и возвращает её id (или null).
+  // createdBatch помнит уже созданную, чтобы повторное действие
+  // (сначала статусы, потом «завести без владельца») не плодило партии
+  const createdBatch = useRef(null);
+  const resolveBatchId = async () => {
+    if (batchId === "") return null;
+    if (batchId !== "new") return Number(batchId);
+    if (createdBatch.current) return createdBatch.current;
+    const { data, error } = await db.from("batches").insert({
+      name: newBatchName.trim() || ("Партия " + new Date().toLocaleDateString("ru-RU")),
+      sent_date: newBatchDate || null,
+      freight_cost: parseFloat(newBatchFreight) || 0,
+      weight_kg: parseFloat(newBatchWeight) || 0
+    }).select().single();
+    if (error) { alert("Не удалось создать партию: " + error.message); return null; }
+    createdBatch.current = data.id;
+    if (reloadBatches) await reloadBatches();
+    return data.id;
+  };
   const [fileName, setFileName] = useState("");
   const [tracks, setTracks] = useState([]);  // распознанные из файла
   const [busy, setBusy] = useState(false);
@@ -1817,12 +1844,13 @@ function ImportAdmin({ parcels, batches, onDone }) {
     if (toUpdate.length === 0) return;
     if (!confirm(`Присвоить статус «${STATUSES[stage].label}» для ${toUpdate.length} посылок?`)) return;
     setBusy(true);
+    const bId = await resolveBatchId();
     let ok = 0, fail = 0;
     for (const p of toUpdate) {
       const dates = [...(p.status_dates || [null, null, null, null, null, null])];
       for (let i = p.status + 1; i <= stage; i++) if (!dates[i]) dates[i] = todayStr();
       const upd = { status: stage, status_dates: dates };
-      if (batchId) upd.batch_id = Number(batchId);
+      if (bId) upd.batch_id = bId;
       const { error } = await db.from("parcels").update(upd).eq("id", p.id);
       error ? fail++ : ok++;
     }
@@ -1835,12 +1863,13 @@ function ImportAdmin({ parcels, batches, onDone }) {
     if (missing.length === 0) return;
     if (!confirm(`Завести ${missing.length} посылок без владельца со статусом «${STATUSES[stage].label}»?\n\nКогда клиент вобьёт этот трек у себя, посылка привяжется к нему автоматически.`)) return;
     setBusy(true);
+    const bId = await resolveBatchId();
     const dates = [null, null, null, null, null, null];
     for (let i = 1; i <= stage; i++) dates[i] = todayStr();
     let ok = 0, fail = 0;
     for (const t of missing) {
       const row = { client_id: null, track_number: t, status: stage, status_dates: dates };
-      if (batchId) row.batch_id = Number(batchId);
+      if (bId) row.batch_id = bId;
       const { error } = await db.from("parcels").insert(row);
       error ? fail++ : ok++;
     }
@@ -1873,6 +1902,7 @@ function ImportAdmin({ parcels, batches, onDone }) {
 
   const reset = () => {
     setTracks([]); setFileName(""); setApplied(null);
+    createdBatch.current = null;
     if (fileRef.current) fileRef.current.value = "";
   };
 
@@ -1897,11 +1927,12 @@ function ImportAdmin({ parcels, batches, onDone }) {
         </div>
 
         <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Партия (мешок)</label>
-        <div className="relative mb-3">
+        <div className="relative mb-2">
           <select value={batchId} onChange={e => setBatchId(e.target.value)}
             className="w-full rounded-xl px-4 py-2.5 pr-10 outline-none text-sm appearance-none"
             style={{ border: `1.5px solid ${C.line}`, background: C.card, color: C.ink, fontFamily: F.body }}>
-            <option value="">Без партии</option>
+            <option value="new" style={{ color: "#14202E", background: "#fff" }}>➕ Создать новую партию</option>
+            <option value="" style={{ color: "#14202E", background: "#fff" }}>Без партии</option>
             {(batches || []).map(b => (
               <option key={b.id} value={b.id} style={{ color: "#14202E", background: "#fff" }}>
                 {b.name}{b.sent_date ? ` (${new Date(b.sent_date).toLocaleDateString("ru-RU")})` : ""}
@@ -1910,6 +1941,33 @@ function ImportAdmin({ parcels, batches, onDone }) {
           </select>
           <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs" style={{ color: C.inkSoft }}>▼</span>
         </div>
+
+        {batchId === "new" && (
+          <div className="rounded-xl p-3 mb-3" style={{ background: C.paper, border: `1px dashed ${C.line}` }}>
+            <div className="flex gap-2 mb-2">
+              <input value={newBatchName} onChange={e => setNewBatchName(e.target.value)}
+                placeholder="Название партии"
+                className="flex-1 rounded-lg px-3 py-2 outline-none text-sm"
+                style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, background: C.card, color: C.ink }} />
+              <input type="date" value={newBatchDate} onChange={e => setNewBatchDate(e.target.value)}
+                className="rounded-lg px-3 py-2 outline-none text-sm"
+                style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, background: C.card, color: C.ink }} />
+            </div>
+            <div className="flex gap-2">
+              <input type="number" min="0" value={newBatchFreight} onChange={e => setNewBatchFreight(e.target.value)}
+                placeholder="перевозка, ₸"
+                className="flex-1 rounded-lg px-3 py-2 outline-none text-sm"
+                style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, background: C.card, color: C.ink }} />
+              <input type="number" min="0" step="0.1" value={newBatchWeight} onChange={e => setNewBatchWeight(e.target.value)}
+                placeholder="вес, кг"
+                className="flex-1 rounded-lg px-3 py-2 outline-none text-sm"
+                style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, background: C.card, color: C.ink }} />
+            </div>
+            <div className="text-xs mt-2" style={{ color: C.inkSoft, fontFamily: F.body }}>
+              Партия создастся автоматически, и все посылки из файла попадут в неё. Стоимость можно вписать позже.
+            </div>
+          </div>
+        )}
 
         <input
           ref={fileRef}
@@ -3244,6 +3302,16 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   const ready = parcels.filter(p => p.status === 4).length;
   const revenue = parcels.filter(p => p.paid).reduce((s, p) => s + priceKZT(p.weight, rate), 0);
 
+  // Касса: вложения − изъятия + собранные деньги − все расходы (включая партии)
+  const debtTotal = parcels.filter(p => !p.paid && p.weight > 0).reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+  const cashTotal = (() => {
+    const inv = capital.filter(c => c.kind === "in").reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const out = capital.filter(c => c.kind === "out").reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    const exp = expenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const bat = batches.reduce((s, b) => s + (Number(b.freight_cost) || 0) + (Number(b.other_cost) || 0), 0);
+    return inv - out + revenue - exp - bat;
+  })();
+
   const activeFilter = ADMIN_FILTERS.find(f => f.id === statusFilter) || ADMIN_FILTERS[0];
   // поиск понимает и русскую раскладку: «не0711» найдёт YT0711…
   const q = searchQuery.toLowerCase();
@@ -3281,16 +3349,19 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
             Выйти
           </button>
         </div>
-        <div className="mt-3 grid grid-cols-3 gap-2">
+        <div className="mt-3 grid grid-cols-4 gap-2">
           {[
-            ["🚚 В пути", inTransit],
-            ["✅ К выдаче", ready],
-            ["💰 Оплачено", revenue.toLocaleString("ru-RU") + " ₸"]
-          ].map(([k, v]) => (
-            <div key={k} className="rounded-xl px-3 py-2" style={{ background: "rgba(255,255,255,0.06)" }}>
-              <div className="text-xs" style={{ color: "#9AA6B5", fontFamily: F.body }}>{k}</div>
-              <div className="text-sm font-bold" style={{ color: "#fff", fontFamily: F.mono }}>{v}</div>
-            </div>
+            ["🚚 В пути", String(inTransit), "#fff"],
+            ["✅ К выдаче", String(ready), "#fff"],
+            ["💸 Долг", debtTotal.toLocaleString("ru-RU"), debtTotal > 0 ? "#FF8A7A" : "#fff"],
+            ["💼 Касса", cashTotal.toLocaleString("ru-RU"), cashTotal >= 0 ? "#7FD6A4" : "#FF8A7A"]
+          ].map(([k, v, col]) => (
+            <button key={k} onClick={() => { setTab("reports"); setReportMode("finance"); }}
+              className="rounded-xl px-2 py-2 text-left transition-all active:scale-95"
+              style={{ background: "rgba(255,255,255,0.06)" }}>
+              <div style={{ fontSize: 10, color: "#9AA6B5", fontFamily: F.body }}>{k}</div>
+              <div className="text-sm font-bold" style={{ color: col, fontFamily: F.mono }}>{v}</div>
+            </button>
           ))}
         </div>
       </div>
@@ -3813,7 +3884,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               ))}
             </div>
             {reportMode === "report" && <ReportsAdmin parcels={parcels} rate={rate} clients={clients} />}
-            {reportMode === "import" && <ImportAdmin parcels={parcels} batches={batches} onDone={load} />}
+            {reportMode === "import" && <ImportAdmin parcels={parcels} batches={batches} onDone={load} reloadBatches={loadBatches} />}
             {reportMode === "finance" && <FinanceAdmin parcels={parcels} rate={rate} batches={batches} expenses={expenses} reloadExpenses={loadExpenses} capital={capital} reloadCapital={loadCapital} />}
             {reportMode === "batches" && <BatchesAdmin parcels={parcels} rate={rate} batches={batches} reloadBatches={loadBatches} reloadParcels={load} />}
           </>
