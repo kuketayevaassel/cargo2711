@@ -1877,7 +1877,7 @@ function ImportAdmin({ parcels, batches, onDone, reloadBatches }) {
     for (let i = 1; i <= stage; i++) dates[i] = todayStr();
     let ok = 0, fail = 0;
     for (const t of missing) {
-      const row = { client_id: null, track_number: t, status: stage, status_dates: dates };
+      const row = { client_id: null, track_number: t, status: stage, status_dates: dates, source: "import" };
       if (bId) row.batch_id = bId;
       const { error } = await db.from("parcels").insert(row);
       error ? fail++ : ok++;
@@ -2095,6 +2095,251 @@ function ImportAdmin({ parcels, batches, onDone, reloadBatches }) {
         </>
       )}
     </>
+  );
+}
+
+// ─── Подробная карточка посылки (админ) ─────────────────────────
+const SOURCE_LABEL = {
+  client: "клиент сам",
+  admin: "админ вручную",
+  import: "импорт из Excel",
+  scan: "сканирование"
+};
+
+function ParcelCard({ parcel, rate, clients, batches, onClose, onChangeOwner, onEditTrack, onDelete, onStatus, onBatch, onWeight, onPaid, onPackDone }) {
+  const p = parcel;
+  const owner = clients.find(c => c.id === p.client_id);
+  const batch = batches.find(b => b.id === p.batch_id);
+  const creator = clients.find(c => c.id === p.created_by);
+  const dates = p.status_dates || [];
+  const [w, setW] = useState(p.weight != null ? String(p.weight) : "");
+
+  const created = p.created_at ? new Date(p.created_at) : null;
+
+  const copy = (txt) => {
+    if (navigator.clipboard?.writeText) navigator.clipboard.writeText(txt);
+    else {
+      const ta = document.createElement("textarea");
+      ta.value = txt; document.body.appendChild(ta); ta.select();
+      document.execCommand("copy"); document.body.removeChild(ta);
+    }
+  };
+
+  const Row = ({ label, children }) => (
+    <div className="flex items-start justify-between py-2 gap-3" style={{ borderTop: `1px solid ${C.line}44` }}>
+      <span className="text-xs flex-shrink-0" style={{ color: C.inkSoft, fontFamily: F.body }}>{label}</span>
+      <div className="text-right min-w-0">{children}</div>
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center"
+      style={{ background: "rgba(20,32,46,0.65)", backdropFilter: "blur(6px)" }} onClick={onClose}>
+      <div className="w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl max-h-[92vh] overflow-y-auto slide-up"
+        style={{ background: C.card }} onClick={e => e.stopPropagation()}>
+
+        {/* Шапка */}
+        <div className="sticky top-0 z-10 px-5 pt-5 pb-3" style={{ background: C.card, borderBottom: `1px solid ${C.line}` }}>
+          <div className="flex items-start justify-between gap-2">
+            <div className="min-w-0">
+              <div className="text-xs uppercase tracking-wider" style={{ color: C.inkSoft, fontFamily: F.body }}>Трек-номер</div>
+              <div className="break-all" style={{ fontFamily: F.mono, fontSize: 17, fontWeight: 600, color: C.ink }}>
+                {p.track_number}
+              </div>
+              {p.title && (
+                <div className="text-sm mt-0.5" style={{ color: C.inkSoft, fontFamily: F.body }}>{p.title}</div>
+              )}
+            </div>
+            <button onClick={onClose} className="w-9 h-9 rounded-full flex items-center justify-center text-lg flex-shrink-0"
+              style={{ background: C.line + "44", color: C.inkSoft }}>✕</button>
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button onClick={() => copy(p.track_number)}
+              className="flex-1 text-xs font-bold py-2 rounded-lg"
+              style={{ background: C.line + "33", color: C.inkSoft, fontFamily: F.body }}>
+              📋 Копировать
+            </button>
+            <button onClick={() => onEditTrack(p)}
+              className="flex-1 text-xs font-bold py-2 rounded-lg"
+              style={{ background: C.transit + "15", color: C.transit, fontFamily: F.body }}>
+              ✏️ Изменить трек
+            </button>
+          </div>
+        </div>
+
+        <div className="px-5 pb-5">
+          {/* Владелец */}
+          <div className="rounded-xl p-3 my-3" style={{ background: p.client_id ? C.transit + "10" : C.gold + "15" }}>
+            <div className="flex items-center justify-between">
+              <div className="min-w-0">
+                <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>Владелец</div>
+                {p.client_id ? (
+                  <>
+                    <div className="text-sm font-bold" style={{ color: C.ink, fontFamily: F.body }}>
+                      {owner?.full_name || p.profiles?.full_name || "—"}
+                    </div>
+                    <div className="text-xs" style={{ fontFamily: F.mono, color: C.transit }}>
+                      {owner?.client_code || p.profiles?.client_code || "—"}
+                      {owner?.phone ? " · " + owner.phone : ""}
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-sm font-bold" style={{ color: C.gold, fontFamily: F.body }}>
+                    ❓ Без владельца
+                  </div>
+                )}
+              </div>
+              <button onClick={() => onChangeOwner(p)}
+                className="text-xs font-bold px-3 py-2 rounded-lg flex-shrink-0 ml-2"
+                style={{ background: C.card, color: C.transit, border: `1px solid ${C.transit}33`, fontFamily: F.body }}>
+                👤 Сменить
+              </button>
+            </div>
+          </div>
+
+          {/* Статус и путь */}
+          <div className="text-xs font-bold mb-2" style={{ color: C.ink, fontFamily: F.body }}>Статус и даты</div>
+          <div className="relative mb-3">
+            <select value={p.status} onChange={e => onStatus(p, e.target.value)}
+              className="w-full rounded-xl px-4 py-2.5 pr-10 outline-none text-sm font-semibold appearance-none"
+              style={{
+                background: STATUSES[p.status].color + "18",
+                color: STATUSES[p.status].color,
+                border: `1.5px solid ${STATUSES[p.status].color}44`,
+                fontFamily: F.body
+              }}>
+              {STATUSES.map((s, i) => (
+                <option key={i} value={i} style={{ color: "#14202E", background: "#fff" }}>{s.icon} {s.label}</option>
+              ))}
+            </select>
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs"
+              style={{ color: STATUSES[p.status].color }}>▼</span>
+          </div>
+
+          <div className="rounded-xl p-3 mb-4" style={{ background: C.paper }}>
+            {STATUSES.map((s, i) => {
+              const passed = i <= p.status;
+              return (
+                <div key={i} className="flex items-center justify-between py-1">
+                  <span className="text-xs" style={{ color: passed ? C.ink : C.inkSoft, fontFamily: F.body, fontWeight: i === p.status ? 700 : 400 }}>
+                    {s.icon} {s.label}
+                  </span>
+                  <span className="text-xs" style={{ fontFamily: F.mono, color: dates[i] ? C.ink : C.inkSoft }}>
+                    {dates[i] || (passed ? "—" : "")}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Деньги */}
+          <div className="text-xs font-bold mb-2" style={{ color: C.ink, fontFamily: F.body }}>Вес и оплата</div>
+          <div className="flex items-center gap-2 mb-3">
+            <input type="number" min="0" step="0.01" value={w}
+              onChange={e => setW(e.target.value)}
+              onBlur={() => w !== String(p.weight ?? "") && onWeight(p, w)}
+              placeholder="вес, кг"
+              className="w-24 rounded-lg px-3 py-2 outline-none text-sm"
+              style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+            <span className="text-sm font-bold" style={{ fontFamily: F.mono, color: C.ink }}>
+              {p.weight > 0 ? money(priceKZT(p.weight, rate)) : "—"}
+            </span>
+            <button onClick={() => onPaid(p)}
+              className="text-xs font-bold px-3 py-2 rounded-lg ml-auto"
+              style={{
+                background: p.paid ? C.ready + "22" : C.line + "33",
+                color: p.paid ? C.ready : C.inkSoft,
+                fontFamily: F.body
+              }}>
+              {p.paid ? "✅ Оплачено" : "Не оплачено"}
+            </button>
+          </div>
+
+          {/* Партия */}
+          <div className="text-xs font-bold mb-2" style={{ color: C.ink, fontFamily: F.body }}>Партия</div>
+          <div className="relative mb-4">
+            <select value={p.batch_id || ""} onChange={e => onBatch(p, e.target.value)}
+              className="w-full rounded-xl px-4 py-2.5 pr-10 outline-none text-sm appearance-none"
+              style={{ border: `1.5px solid ${C.line}`, background: C.card, color: C.ink, fontFamily: F.body }}>
+              <option value="">Без партии</option>
+              {batches.map(b => (
+                <option key={b.id} value={b.id} style={{ color: "#14202E", background: "#fff" }}>
+                  {b.name}{b.sent_date ? ` (${new Date(b.sent_date).toLocaleDateString("ru-RU")})` : ""}
+                </option>
+              ))}
+            </select>
+            <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs" style={{ color: C.inkSoft }}>▼</span>
+          </div>
+
+          {/* Упаковка */}
+          {p.need_packaging && (
+            <div className="rounded-xl p-3 mb-4" style={{ background: C.gold + "15", border: `1px solid ${C.gold}44` }}>
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="text-xs font-bold" style={{ color: C.gold, fontFamily: F.body }}>
+                    📦 Запрошена доп. упаковка
+                  </div>
+                  <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>
+                    {p.packaging_done ? "Вопрос решён" : "Нужно связаться с клиентом"}
+                  </div>
+                </div>
+                {!p.packaging_done && (
+                  <button onClick={() => onPackDone(p)}
+                    className="text-xs font-bold px-3 py-1.5 rounded-lg"
+                    style={{ background: C.ready + "22", color: C.ready, fontFamily: F.body }}>
+                    ✓ Решено
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Служебное */}
+          <div className="text-xs font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>История записи</div>
+          <Row label="Внесена">
+            <div className="text-xs font-semibold" style={{ color: C.ink, fontFamily: F.body }}>
+              {SOURCE_LABEL[p.source] || "неизвестно"}
+            </div>
+            {creator && (
+              <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.mono }}>
+                {creator.client_code} {creator.full_name || ""}
+              </div>
+            )}
+          </Row>
+          <Row label="Дата добавления">
+            <span className="text-xs" style={{ fontFamily: F.mono, color: C.ink }}>
+              {created ? created.toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—"}
+            </span>
+          </Row>
+          {batch && (
+            <Row label="Партия отправлена">
+              <span className="text-xs" style={{ fontFamily: F.mono, color: C.ink }}>
+                {batch.sent_date ? new Date(batch.sent_date).toLocaleDateString("ru-RU") : "дата не указана"}
+              </span>
+            </Row>
+          )}
+          <Row label="ID записи">
+            <span style={{ fontSize: 10, fontFamily: F.mono, color: C.inkSoft }}>{p.id}</span>
+          </Row>
+
+          {/* Действия */}
+          <div className="flex gap-2 mt-4">
+            {owner?.phone && (
+              <button onClick={() => openWhatsApp(owner.phone, `Здравствуйте! По вашей посылке ${p.track_number}${p.title ? " (" + p.title + ")" : ""}:\n\n`)}
+                className="flex-1 py-3 rounded-xl font-bold text-white text-sm"
+                style={{ background: "#25D366", fontFamily: F.body }}>
+                💬 WhatsApp
+              </button>
+            )}
+            <button onClick={() => onDelete(p)}
+              className="px-4 py-3 rounded-xl font-bold text-sm"
+              style={{ background: "transparent", color: C.stamp, border: `1.5px solid ${C.stamp}55`, fontFamily: F.body }}>
+              🗑 Удалить
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -3239,6 +3484,16 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
     setPickupClient(null);
   };
 
+  const [cardFor, setCardFor] = useState(null);       // открытая карточка посылки
+  const [adminId, setAdminId] = useState(null);
+  useEffect(() => { db.auth.getUser().then(({ data }) => setAdminId(data?.user?.id || null)); }, []);
+
+  const setBatchFor = async (p, batchId) => {
+    const { error } = await db.from("parcels").update({ batch_id: batchId ? Number(batchId) : null }).eq("id", p.id);
+    if (error) { alert("Не удалось изменить партию: " + error.message); return; }
+    load();
+  };
+
   // сменить владельца посылки (или сделать её ничейной)
   const [ownerFor, setOwnerFor] = useState(null);     // посылка, которой меняем владельца
   const [ownerSearch, setOwnerSearch] = useState("");
@@ -3383,7 +3638,9 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
       track_number: t,
       title: (titleVal || "").trim() || null,
       status: 1,
-      status_dates: dates
+      status_dates: dates,
+      created_by: adminId,
+      source: silent ? "scan" : "admin"
     });
     if (error) {
       silent ? showAddFeedback(false, "❌ " + error.message) : alert("Не удалось добавить: " + error.message);
@@ -3683,11 +3940,12 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               <div key={p.id} className="rounded-xl p-4 mb-3 slide-up"
                 style={{ background: C.card, border: `1px solid ${C.line}`, animationDelay: `${idx * 20}ms` }}>
                 <div className="flex items-center justify-between mb-1">
-                  <button onClick={() => editTrack(p)}
-                    className="text-left transition-all active:scale-95"
+                  <button onClick={() => setCardFor(p)}
+                    className="text-left transition-all active:scale-95 flex items-center gap-1"
                     style={{ fontFamily: F.mono, fontSize: 13, fontWeight: 600, color: C.ink }}
-                    title="Нажмите, чтобы исправить трек-номер">
+                    title="Открыть карточку посылки">
                     {p.track_number}
+                    <span style={{ fontSize: 11, color: C.inkSoft }}>›</span>
                   </button>
                   <div className="flex items-center gap-2">
                     <button
@@ -4086,6 +4344,28 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
           </button>
         ))}
       </div>
+
+      {/* ─── Подробная карточка посылки ─── */}
+      {cardFor && (() => {
+        const fresh = parcels.find(x => x.id === cardFor.id) || cardFor;
+        return (
+          <ParcelCard
+            parcel={fresh}
+            rate={rate}
+            clients={clients}
+            batches={batches}
+            onClose={() => setCardFor(null)}
+            onChangeOwner={p => { setCardFor(null); setOwnerFor(p); setOwnerSearch(""); }}
+            onEditTrack={p => editTrack(p)}
+            onDelete={p => { adminDelete(p); setCardFor(null); }}
+            onStatus={(p, v) => setStatusDirect(p, v)}
+            onBatch={(p, v) => setBatchFor(p, v)}
+            onWeight={(p, v) => setWeight(p, v)}
+            onPaid={p => togglePaid(p)}
+            onPackDone={p => markPackDone(p)}
+          />
+        );
+      })()}
 
       {/* ─── Окно: смена владельца посылки ─── */}
       {ownerFor && (
