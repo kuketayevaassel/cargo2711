@@ -1768,12 +1768,21 @@ function ImportAdmin({ parcels, batches, onDone, reloadBatches }) {
   const [stage, setStage] = useState(2);     // какой статус присвоить (по умолчанию «Отправлен из Китая»)
   const [batchId, setBatchId] = useState("new"); // "new" | "" | id существующей
   const todayISO = new Date().toISOString().slice(0, 10);
-  const [newBatchName, setNewBatchName] = useState(
-    "Партия " + new Date().toLocaleDateString("ru-RU")
-  );
-  const [newBatchDate, setNewBatchDate] = useState(todayISO);
+  // ОДНА дата: и для статуса посылок, и для партии
+  const [opDate, setOpDate] = useState(todayISO);
   const [newBatchFreight, setNewBatchFreight] = useState("");
   const [newBatchWeight, setNewBatchWeight] = useState("");
+  const [showMore, setShowMore] = useState(false);
+
+  // дата в формате дд.мм.гггг для записи в этапы посылки
+  const opDateRu = (() => {
+    if (!opDate) return todayStr();
+    const [y, m, d] = opDate.split("-");
+    return `${d}.${m}.${y}`;
+  })();
+
+  // название партии собирается само из даты и этапа
+  const autoBatchName = `${STATUSES[stage].label} ${opDate ? opDate.split("-").reverse().join(".") : todayStr()}`;
 
   // создаёт партию при необходимости и возвращает её id (или null).
   // createdBatch помнит уже созданную, чтобы повторное действие
@@ -1784,8 +1793,8 @@ function ImportAdmin({ parcels, batches, onDone, reloadBatches }) {
     if (batchId !== "new") return Number(batchId);
     if (createdBatch.current) return createdBatch.current;
     const { data, error } = await db.from("batches").insert({
-      name: newBatchName.trim() || ("Партия " + new Date().toLocaleDateString("ru-RU")),
-      sent_date: newBatchDate || null,
+      name: autoBatchName,
+      sent_date: opDate || todayISO,
       freight_cost: parseFloat(newBatchFreight) || 0,
       weight_kg: parseFloat(newBatchWeight) || 0
     }).select().single();
@@ -1857,7 +1866,7 @@ function ImportAdmin({ parcels, batches, onDone, reloadBatches }) {
     let ok = 0, fail = 0;
     for (const p of toUpdate) {
       const dates = [...(p.status_dates || [null, null, null, null, null, null])];
-      for (let i = p.status + 1; i <= stage; i++) if (!dates[i]) dates[i] = todayStr();
+      for (let i = p.status + 1; i <= stage; i++) if (!dates[i]) dates[i] = opDateRu;
       const upd = { status: stage, status_dates: dates };
       if (bId) upd.batch_id = bId;
       const { error } = await db.from("parcels").update(upd).eq("id", p.id);
@@ -1874,7 +1883,7 @@ function ImportAdmin({ parcels, batches, onDone, reloadBatches }) {
     setBusy(true);
     const bId = await resolveBatchId();
     const dates = [null, null, null, null, null, null];
-    for (let i = 1; i <= stage; i++) dates[i] = todayStr();
+    for (let i = 1; i <= stage; i++) dates[i] = opDateRu;
     let ok = 0, fail = 0;
     for (const t of missing) {
       const row = { client_id: null, track_number: t, status: stage, status_dates: dates, source: "import" };
@@ -1935,46 +1944,74 @@ function ImportAdmin({ parcels, batches, onDone, reloadBatches }) {
           <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs" style={{ color: C.inkSoft }}>▼</span>
         </div>
 
-        <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Партия (мешок)</label>
-        <div className="relative mb-2">
-          <select value={batchId} onChange={e => setBatchId(e.target.value)}
-            className="w-full rounded-xl px-4 py-2.5 pr-10 outline-none text-sm appearance-none"
-            style={{ border: `1.5px solid ${C.line}`, background: C.card, color: C.ink, fontFamily: F.body }}>
-            <option value="new" style={{ color: "#14202E", background: "#fff" }}>➕ Создать новую партию</option>
-            <option value="" style={{ color: "#14202E", background: "#fff" }}>Без партии</option>
-            {(batches || []).map(b => (
-              <option key={b.id} value={b.id} style={{ color: "#14202E", background: "#fff" }}>
-                {b.name}{b.sent_date ? ` (${new Date(b.sent_date).toLocaleDateString("ru-RU")})` : ""}
-              </option>
-            ))}
-          </select>
-          <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs" style={{ color: C.inkSoft }}>▼</span>
+        <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>
+          Дата операции
+        </label>
+        <input type="date" value={opDate} onChange={e => setOpDate(e.target.value)}
+          className="w-full rounded-xl px-4 py-2.5 mb-3 outline-none text-sm"
+          style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
+
+        {/* Что произойдёт — человеческим языком */}
+        <div className="rounded-xl px-3 py-3 mb-3" style={{ background: C.ready + "10", border: `1px solid ${C.ready}33` }}>
+          <div className="text-xs font-bold mb-1" style={{ color: C.ready, fontFamily: F.body }}>Что произойдёт</div>
+          <div className="text-xs" style={{ color: C.inkSoft, fontFamily: F.body, lineHeight: 1.6 }}>
+            • Посылкам из файла поставится статус <b style={{ color: C.ink }}>{STATUSES[stage].label}</b> с датой <b style={{ color: C.ink }}>{opDateRu}</b><br/>
+            {batchId === "new" ? (
+              <>• Создастся партия <b style={{ color: C.ink }}>«{autoBatchName}»</b>, и все они попадут в неё</>
+            ) : batchId === "" ? (
+              <>• Партия не создаётся</>
+            ) : (
+              <>• Посылки добавятся в партию <b style={{ color: C.ink }}>«{(batches || []).find(b => String(b.id) === String(batchId))?.name || "—"}»</b></>
+            )}
+          </div>
         </div>
 
-        {batchId === "new" && (
+        <button onClick={() => setShowMore(!showMore)}
+          className="text-xs font-semibold mb-3" style={{ color: C.transit, fontFamily: F.body }}>
+          {showMore ? "▲ Скрыть" : "▼ Стоимость перевозки и другая партия"}
+        </button>
+
+        {showMore && (
           <div className="rounded-xl p-3 mb-3" style={{ background: C.paper, border: `1px dashed ${C.line}` }}>
-            <div className="flex gap-2 mb-2">
-              <input value={newBatchName} onChange={e => setNewBatchName(e.target.value)}
-                placeholder="Название партии"
-                className="flex-1 rounded-lg px-3 py-2 outline-none text-sm"
-                style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, background: C.card, color: C.ink }} />
-              <input type="date" value={newBatchDate} onChange={e => setNewBatchDate(e.target.value)}
-                className="rounded-lg px-3 py-2 outline-none text-sm"
-                style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, background: C.card, color: C.ink }} />
+            <label className="block" style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>Куда положить</label>
+            <div className="relative mb-3">
+              <select value={batchId} onChange={e => setBatchId(e.target.value)}
+                className="w-full rounded-lg px-3 py-2 pr-8 outline-none text-sm appearance-none"
+                style={{ border: `1.5px solid ${C.line}`, background: C.card, color: C.ink, fontFamily: F.body }}>
+                <option value="new" style={{ color: "#14202E", background: "#fff" }}>➕ Новая партия (по дате)</option>
+                <option value="" style={{ color: "#14202E", background: "#fff" }}>Без партии</option>
+                {(batches || []).map(b => (
+                  <option key={b.id} value={b.id} style={{ color: "#14202E", background: "#fff" }}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+              <span className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-xs" style={{ color: C.inkSoft }}>▼</span>
             </div>
-            <div className="flex gap-2">
-              <input type="number" min="0" value={newBatchFreight} onChange={e => setNewBatchFreight(e.target.value)}
-                placeholder="перевозка, ₸"
-                className="flex-1 rounded-lg px-3 py-2 outline-none text-sm"
-                style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, background: C.card, color: C.ink }} />
-              <input type="number" min="0" step="0.1" value={newBatchWeight} onChange={e => setNewBatchWeight(e.target.value)}
-                placeholder="вес, кг"
-                className="flex-1 rounded-lg px-3 py-2 outline-none text-sm"
-                style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, background: C.card, color: C.ink }} />
-            </div>
-            <div className="text-xs mt-2" style={{ color: C.inkSoft, fontFamily: F.body }}>
-              Партия создастся автоматически, и все посылки из файла попадут в неё. Стоимость можно вписать позже.
-            </div>
+
+            {batchId === "new" && (
+              <>
+                <div className="flex gap-2">
+                  <div className="flex-1">
+                    <label className="block" style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>Перевозка, ₸</label>
+                    <input type="number" min="0" value={newBatchFreight} onChange={e => setNewBatchFreight(e.target.value)}
+                      placeholder="можно позже"
+                      className="w-full rounded-lg px-3 py-2 outline-none text-sm"
+                      style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, background: C.card, color: C.ink }} />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block" style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>Вес накладной, кг</label>
+                    <input type="number" min="0" step="0.1" value={newBatchWeight} onChange={e => setNewBatchWeight(e.target.value)}
+                      placeholder="можно позже"
+                      className="w-full rounded-lg px-3 py-2 outline-none text-sm"
+                      style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, background: C.card, color: C.ink }} />
+                  </div>
+                </div>
+                <div className="text-xs mt-2" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                  Если не знаете сумму — оставьте пустым и впишете, когда перевозчик выставит счёт.
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -2490,70 +2527,21 @@ function BatchesAdmin({ parcels, rate, batches, reloadBatches, reloadParcels }) 
 
   return (
     <>
-      <div className="rounded-2xl p-5 mb-4 slide-up" style={{ background: C.card, border: `1px solid ${C.line}` }}>
-        <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>
-          {editId ? "✏️ Изменить партию" : "📦 Новая партия (мешок)"}
-        </div>
-        <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
-          Одна отправка из Китая. Укажите, сколько заплатили за перевозку — система посчитает себестоимость килограмма и прибыль.
-        </div>
-
-        <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Название</label>
-        <input value={name} onChange={e => setName(e.target.value)} placeholder="Партия 15 сентября"
-          className="w-full rounded-xl px-4 py-2.5 mb-3 outline-none text-sm"
-          style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, color: C.ink }} />
-
-        <div className="flex gap-2 mb-3">
-          <div className="flex-1">
-            <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Дата отправки</label>
-            <input type="date" value={sentDate} onChange={e => setSentDate(e.target.value)}
-              className="w-full rounded-xl px-3 py-2.5 outline-none text-sm"
-              style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
-          </div>
-          <div className="flex-1">
-            <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Вес по накладной, кг</label>
-            <input type="number" min="0" step="0.1" value={weight} onChange={e => setWeight(e.target.value)} placeholder="340"
-              className="w-full rounded-xl px-3 py-2.5 outline-none text-sm"
-              style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
-          </div>
-        </div>
-
-        <div className="flex gap-2 mb-4">
-          <div className="flex-1">
-            <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Перевозка, ₸</label>
-            <input type="number" min="0" value={freight} onChange={e => setFreight(e.target.value)} placeholder="420000"
-              className="w-full rounded-xl px-3 py-2.5 outline-none text-sm"
-              style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
-          </div>
-          <div className="flex-1">
-            <label className="block text-xs font-semibold mb-1" style={{ color: C.inkSoft, fontFamily: F.body }}>Прочее, ₸</label>
-            <input type="number" min="0" value={other} onChange={e => setOther(e.target.value)} placeholder="таможня, разгрузка"
-              className="w-full rounded-xl px-3 py-2.5 outline-none text-sm"
-              style={{ border: `1.5px solid ${C.line}`, fontFamily: F.mono, color: C.ink }} />
-          </div>
-        </div>
-
-        <div className="flex gap-2">
-          {editId && (
-            <button onClick={reset} className="flex-1 py-3 rounded-xl font-bold"
-              style={{ background: "transparent", color: C.inkSoft, border: `1.5px solid ${C.line}`, fontFamily: F.body }}>
-              Отмена
-            </button>
-          )}
-          <button onClick={save} disabled={busy}
-            className="flex-1 py-3 rounded-xl font-bold text-white transition-all active:scale-[0.98]"
-            style={{ background: C.stamp, fontFamily: F.body, opacity: busy ? 0.6 : 1 }}>
-            {busy ? "Сохранение…" : editId ? "💾 Сохранить" : "➕ Создать партию"}
-          </button>
-        </div>
+      <div className="rounded-xl px-4 py-3 mb-4 text-xs" style={{ background: C.ready + "10", border: `1px solid ${C.ready}33`, color: C.inkSoft, fontFamily: F.body, lineHeight: 1.6 }}>
+        <b style={{ color: C.ready }}>Партии создаются сами.</b> Загрузите список отправки во вкладке «📥 Импорт Excel» — партия создастся автоматически с датой отправки, и все посылки попадут в неё. Здесь остаётся только вписать стоимость перевозки, когда придёт счёт.
       </div>
 
       {batches.length === 0 && (
         <div className="text-center py-10">
           <div className="text-4xl mb-3">📦</div>
-          <div className="text-sm" style={{ color: C.inkSoft, fontFamily: F.body }}>
-            Партий пока нет. Создайте первую — и привязывайте к ней посылки при импорте списка отправки.
+          <div className="text-sm mb-4" style={{ color: C.inkSoft, fontFamily: F.body }}>
+            Партий пока нет
           </div>
+          <button onClick={() => { setDraft({ name: "Партия " + new Date().toLocaleDateString("ru-RU"), sentDate: new Date().toISOString().slice(0,10), freight: "", other: "", weight: "", editId: null }); setTimeout(save, 100); }}
+            className="text-xs font-bold px-4 py-2.5 rounded-xl"
+            style={{ background: C.line + "33", color: C.inkSoft, fontFamily: F.body }}>
+            Создать пустую партию вручную
+          </button>
         </div>
       )}
 
