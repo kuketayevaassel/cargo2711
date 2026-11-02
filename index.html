@@ -408,14 +408,23 @@ function packagingMessage(client, parcel) {
 }
 
 function readyMessage(client, list, rate, settings) {
-  const lines = list.map(p =>
-    `• ${p.track_number}${p.title ? " — " + p.title : ""}${p.weight > 0 ? ` (${Number(p.weight).toFixed(2)} кг)` : ""}`
-  );
+  const sum = list.reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+  const lines = list.map(p => {
+    const parts = [p.track_number];
+    if (p.title) parts.push(p.title);
+    if (p.weight > 0) {
+      parts.push(`${Number(p.weight).toFixed(2)} кг`);
+      parts.push(`${priceKZT(p.weight, rate).toLocaleString("ru-RU")} ₸`);
+    }
+    return "• " + parts.join(" — ");
+  });
   return [
     `Здравствуйте${client.full_name ? ", " + client.full_name : ""}! 👋`,
     ``,
     `Ваши посылки прибыли и готовы к выдаче (код ${client.client_code}):`,
     ...lines,
+    ``,
+    `💰 Итого к оплате: ${sum.toLocaleString("ru-RU")} ₸`,
     ``,
     `⏳ Бесплатное хранение — не более 7 дней.`,
     ``,
