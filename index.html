@@ -527,6 +527,7 @@ function Auth() {
           </div>
         </div>
       </div>
+
     </div>
   );
 }
@@ -2769,9 +2770,9 @@ function BatchesAdmin({ parcels, rate, batches, reloadBatches, reloadParcels }) 
 }
 
 // ─── Финансы за период ──────────────────────────────────────────
-const EXPENSE_CATS = ["Перевозка", "Аренда", "Зарплата", "Таможня", "Реклама", "Прочее"];
+const EXPENSE_CATS = ["Аренда", "Налоги", "Зарплата", "Перевозка", "Таможня", "Реклама", "Прочее"];
 
-function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses, capital, reloadCapital }) {
+function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses, capital, reloadCapital, settings }) {
   const today = new Date();
   const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
   const iso = d => d.toISOString().slice(0, 10);
@@ -2941,6 +2942,100 @@ function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses, capita
         </div>
       </div>
 
+      {/* Честный расчёт по партиям */}
+      {(() => {
+        // по каждой партии: выручка её посылок против её себестоимости
+        const rows = (batches || []).map(b => {
+          const list = parcels.filter(p => p.batch_id === b.id);
+          const revenue = list.reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+          const paid = list.filter(p => p.paid).reduce((s, p) => s + priceKZT(p.weight, rate), 0);
+          const cost = (Number(b.freight_cost) || 0) + (Number(b.other_cost) || 0);
+          const issued = list.filter(p => p.status === 5).length;
+          return { b, list, revenue, paid, cost, profit: revenue - cost, issued, done: list.length > 0 && issued === list.length };
+        }).filter(r => r.list.length > 0);
+
+        if (rows.length === 0) return null;
+        const totalRev = rows.reduce((s, r) => s + r.revenue, 0);
+        const totalCostB = rows.reduce((s, r) => s + r.cost, 0);
+        const totalProfit = totalRev - totalCostB;
+        const noCost = rows.filter(r => r.cost === 0).length;
+
+        return (
+          <div className="rounded-2xl p-4 mb-4" style={{ background: C.card, border: `1.5px solid ${C.transit}44` }}>
+            <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>
+              📦 Заработок на доставке (по партиям)
+            </div>
+            <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+              Честный расчёт: выручка каждой партии против её перевозки. Аренда и налоги сюда не входят.
+            </div>
+
+            <div className="rounded-xl px-4 py-3 mb-3 text-center"
+              style={{ background: totalProfit >= 0 ? C.ready + "15" : C.stamp + "12" }}>
+              <div style={{ fontFamily: F.mono, fontSize: 24, fontWeight: 700, color: totalProfit >= 0 ? C.ready : C.stamp }}>
+                {totalProfit >= 0 ? "+" : ""}{money(totalProfit)}
+              </div>
+              <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>
+                выручка {money(totalRev)} − перевозка {money(totalCostB)}
+              </div>
+            </div>
+
+            {noCost > 0 && (
+              <div className="rounded-lg px-3 py-2 mb-2 text-xs" style={{ background: C.gold + "15", color: C.gold, fontFamily: F.body }}>
+                ⚠️ У {noCost} партий не вписана стоимость перевозки — заработок завышен
+              </div>
+            )}
+
+            {rows.map(r => (
+              <div key={r.b.id} className="flex items-center justify-between py-2" style={{ borderTop: `1px solid ${C.line}44` }}>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-semibold truncate" style={{ color: C.ink, fontFamily: F.body }}>
+                    {r.b.name} {r.done && <span style={{ color: C.ready }}>✓</span>}
+                  </div>
+                  <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>
+                    выдано {r.issued} из {r.list.length} · собрано {money(r.paid)} из {money(r.revenue)}
+                  </div>
+                </div>
+                <div className="text-sm font-bold ml-2" style={{ color: r.profit >= 0 ? C.ready : C.stamp, fontFamily: F.mono }}>
+                  {r.profit >= 0 ? "+" : ""}{money(r.profit)}
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
+
+      {/* Налоговый резерв */}
+      {(() => {
+        const pct = Number(settings?.tax_percent) || 0;
+        if (pct <= 0) return null;
+        const reserve = Math.round(collectedAll * pct / 100);
+        const paidTax = (expenses || []).filter(e => e.category === "Налоги").reduce((s, e) => s + (Number(e.amount) || 0), 0);
+        const left = Math.max(0, reserve - paidTax);
+        return (
+          <div className="rounded-2xl p-4 mb-4" style={{ background: C.card, border: `1.5px solid ${left > 0 ? C.gold + "66" : C.line}` }}>
+            <div className="text-sm font-bold mb-1" style={{ color: C.ink, fontFamily: F.body }}>🏛 Налоговый резерв</div>
+            <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+              {pct}% с оборота за всё время. Эти деньги нельзя тратить — они уйдут в бюджет.
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                ["Оборот", money(collectedAll), C.ink],
+                ["Начислено", money(reserve), C.gold],
+                ["Осталось отложить", money(left), left > 0 ? C.stamp : C.ready]
+              ].map(([k, v, col]) => (
+                <div key={k} className="rounded-lg px-2 py-2" style={{ background: C.paper }}>
+                  <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>{k}</div>
+                  <div className="text-xs font-bold" style={{ color: col, fontFamily: F.mono }}>{v}</div>
+                </div>
+              ))}
+            </div>
+            <div className="text-xs mt-2" style={{ color: C.inkSoft, fontFamily: F.body }}>
+              Ставку меняйте в ⚙️ Настройках. Уточните её у бухгалтера — она зависит от режима налогообложения.
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Разбивка */}
       <div className="grid grid-cols-2 gap-2 mb-4">
         {[
@@ -2975,6 +3070,66 @@ function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses, capita
           ))}
         </div>
       )}
+
+      {/* Регулярные расходы — напоминание и повтор в один тап */}
+      {(() => {
+        const n = new Date();
+        const monthKey = d => `${d.getFullYear()}-${d.getMonth()}`;
+        const thisMonth = monthKey(n);
+        // по каждой категории берём последнюю запись
+        const last = {};
+        (expenses || []).forEach(e => {
+          const d = new Date(e.spent_on + "T12:00:00");
+          if (!last[e.category] || d > new Date(last[e.category].spent_on + "T12:00:00")) last[e.category] = e;
+        });
+        // регулярные: те, что были в прошлые месяцы, но ещё не внесены в текущем
+        const pending = Object.values(last).filter(e => {
+          if (e.category === "Налоги") return false;
+          const d = new Date(e.spent_on + "T12:00:00");
+          return monthKey(d) !== thisMonth;
+        });
+        if (pending.length === 0) return null;
+        const monthName = n.toLocaleDateString("ru-RU", { month: "long", year: "numeric" });
+
+        const repeat = async (e) => {
+          const day = new Date(e.spent_on + "T12:00:00").getDate();
+          const target = new Date(n.getFullYear(), n.getMonth(), Math.min(day, 28));
+          const { error } = await db.from("expenses").insert({
+            spent_on: target.toISOString().slice(0, 10),
+            category: e.category,
+            amount: e.amount,
+            note: e.note
+          });
+          if (error) { alert("Ошибка: " + error.message); return; }
+          reloadExpenses();
+        };
+
+        return (
+          <div className="rounded-2xl p-4 mb-4" style={{ background: C.card, border: `1.5px solid ${C.gold}55` }}>
+            <div className="text-sm font-bold mb-1" style={{ color: C.gold, fontFamily: F.body }}>
+              🔁 Не внесены за {monthName}
+            </div>
+            <div className="text-xs mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+              Эти расходы были в прошлом месяце. Если они повторяются — внесите одним нажатием.
+            </div>
+            {pending.map(e => (
+              <div key={e.id} className="flex items-center justify-between py-2" style={{ borderTop: `1px solid ${C.line}44` }}>
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-bold" style={{ color: C.ink, fontFamily: F.body }}>{e.category}</div>
+                  <div style={{ fontSize: 10, color: C.inkSoft, fontFamily: F.body }}>
+                    в прошлый раз {money(e.amount)} · {new Date(e.spent_on).toLocaleDateString("ru-RU")}
+                  </div>
+                </div>
+                <button onClick={() => repeat(e)}
+                  className="text-xs font-bold px-3 py-2 rounded-lg ml-2 flex-shrink-0"
+                  style={{ background: C.gold + "22", color: C.gold, fontFamily: F.body }}>
+                  ➕ Внести {money(e.amount)}
+                </button>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {/* Добавить расход */}
       <div className="rounded-2xl p-5 mb-4" style={{ background: C.card, border: `1px solid ${C.line}` }}>
@@ -3108,6 +3263,9 @@ function FinanceAdmin({ parcels, rate, batches, expenses, reloadExpenses, capita
         <b style={{ color: C.ink }}>Как считается.</b> Выручка берётся по дате выдачи посылки клиенту. Прибыль = собранные деньги − расходы за период (включая стоимость партий, отправленных в этом периоде). Если посылка выдана, но не отмечена оплаченной, она попадает в «не оплачено» и не увеличивает прибыль.
         <div className="mt-2">
           <b style={{ color: C.ink }}>Прибыль и касса — разное.</b> Прибыль показывает, заработали ли вы на услуге. Касса — сколько денег физически есть. Прибыль может быть большой, а касса пустой, если всё ушло в новую партию.
+        </div>
+        <div className="mt-2">
+          <b style={{ color: C.stamp }}>Почему месячная прибыль скачет.</b> Партию отправили в одном месяце (расход), а выдали и собрали деньги в другом (выручка). Поэтому один месяц выглядит убыточным, а следующий — сверхприбыльным, хотя это одна сделка. Чтобы понять реальный заработок на доставке, смотрите блок «📦 Заработок на доставке (по партиям)» выше — там выручка сравнивается с перевозкой тех же самых посылок.
         </div>
       </div>
     </>
@@ -3473,6 +3631,18 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
   };
 
   const [cardFor, setCardFor] = useState(null);       // открытая карточка посылки
+  const [clientQuery, setClientQuery] = useState(""); // поиск на вкладке «Клиенты»
+
+  const foundClients = (() => {
+    const q = clientQuery.trim().toLowerCase();
+    if (!q) return clients;
+    const digits = q.replace(/\D/g, "");
+    return clients.filter(c =>
+      (c.full_name || "").toLowerCase().includes(q) ||
+      (c.client_code || "").toLowerCase().includes(q) ||
+      (digits && (c.phone || "").replace(/\D/g, "").includes(digits))
+    );
+  })();
   const [adminId, setAdminId] = useState(null);
   useEffect(() => { db.auth.getUser().then(({ data }) => setAdminId(data?.user?.id || null)); }, []);
 
@@ -3858,6 +4028,41 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               ))}
             </div>
 
+            {/* Отбор по клиенту */}
+            <div className="relative mb-2">
+              <select
+                value={clientFilter?.id || ""}
+                onChange={e => {
+                  const v = e.target.value;
+                  if (!v) { setClientFilter(null); return; }
+                  const c = clients.find(x => x.id === v);
+                  if (c) setClientFilter({ id: c.id, code: c.client_code, name: c.full_name });
+                }}
+                className="w-full rounded-xl px-4 py-3 pr-10 outline-none text-sm font-semibold appearance-none"
+                style={{
+                  border: `1.5px solid ${clientFilter ? C.transit : C.line}`,
+                  background: clientFilter ? C.transit : C.card,
+                  color: clientFilter ? "#fff" : C.ink,
+                  fontFamily: F.body
+                }}
+              >
+                <option value="" style={{ color: "#14202E", background: "#fff" }}>
+                  👤 Все клиенты ({scopeParcels.length})
+                </option>
+                {clients
+                  .map(c => ({ c, cnt: scopeParcels.filter(p => p.client_id === c.id).length }))
+                  .filter(x => x.cnt > 0)
+                  .sort((a, b) => b.cnt - a.cnt)
+                  .map(({ c, cnt }) => (
+                    <option key={c.id} value={c.id} style={{ color: "#14202E", background: "#fff" }}>
+                      {c.client_code} · {c.full_name || "—"} ({cnt})
+                    </option>
+                  ))}
+              </select>
+              <span className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-xs"
+                style={{ color: clientFilter ? "#fff" : C.inkSoft }}>▼</span>
+            </div>
+
             {/* Отбор по статусу — выпадающий список */}
             <div className="relative mb-3">
               <select
@@ -4173,13 +4378,37 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
               );
             })()}
 
+            {/* Поиск по клиентам */}
+            <div className="mb-3">
+              <input
+                value={clientQuery}
+                onChange={e => setClientQuery(e.target.value)}
+                placeholder="🔍 Поиск: имя, код или телефон"
+                className="w-full rounded-xl px-4 py-3 outline-none text-sm"
+                style={{ border: `1.5px solid ${C.line}`, fontFamily: F.body, background: C.card, color: C.ink }}
+              />
+            </div>
+
             {loading && <div className="text-sm text-center py-8" style={{ color: C.inkSoft, fontFamily: F.body }}>Загрузка…</div>}
             {!loading && clients.length === 0 && (
               <div className="text-sm text-center py-8" style={{ color: C.inkSoft, fontFamily: F.body }}>
                 Пока нет клиентов.
               </div>
             )}
-            {clients.map(c => (
+            {!loading && clients.length > 0 && foundClients.length === 0 && (
+              <div className="text-center py-10">
+                <div className="text-4xl mb-3">🔍</div>
+                <div className="text-sm" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                  Ничего не найдено
+                </div>
+              </div>
+            )}
+            {clientQuery && foundClients.length > 0 && (
+              <div className="text-xs mb-2 text-center" style={{ color: C.inkSoft, fontFamily: F.body }}>
+                Найдено: <b style={{ color: C.ink, fontFamily: F.mono }}>{foundClients.length}</b> из {clients.length}
+              </div>
+            )}
+            {foundClients.map(c => (
               <div key={c.id} className="rounded-xl p-4 mb-3 slide-up"
                 style={{ background: C.card, border: `1px solid ${C.line}` }}>
                 <div className="flex items-center justify-between">
@@ -4257,7 +4486,7 @@ function AdminApp({ settings, reloadSettings, onLogout }) {
             </div>
             {reportMode === "report" && <ReportsAdmin parcels={parcels} rate={rate} clients={clients} />}
             {reportMode === "import" && <ImportAdmin parcels={parcels} batches={batches} onDone={load} reloadBatches={loadBatches} />}
-            {reportMode === "finance" && <FinanceAdmin parcels={parcels} rate={rate} batches={batches} expenses={expenses} reloadExpenses={loadExpenses} capital={capital} reloadCapital={loadCapital} />}
+            {reportMode === "finance" && <FinanceAdmin parcels={parcels} rate={rate} batches={batches} expenses={expenses} reloadExpenses={loadExpenses} capital={capital} reloadCapital={loadCapital} settings={settings} />}
             {reportMode === "batches" && <BatchesAdmin parcels={parcels} rate={rate} batches={batches} reloadBatches={loadBatches} reloadParcels={load} />}
           </>
         )}
@@ -4788,7 +5017,8 @@ function SettingsForm({ settings, onSaved }) {
       code_prefix: f.code_prefix,
       pickup_address: f.pickup_address,
       pickup_hours: f.pickup_hours,
-      payment_info: f.payment_info
+      payment_info: f.payment_info,
+      tax_percent: parseFloat(f.tax_percent) || 0
     }).eq("id", 1);
     setBusy(false);
     if (error) alert(error.message);
@@ -4814,6 +5044,12 @@ function SettingsForm({ settings, onSaved }) {
       <SettingsField label="Адрес пункта выдачи" value={f.pickup_address} onChange={v => upd("pickup_address", v)} />
       <SettingsField label="Часы работы" value={f.pickup_hours} onChange={v => upd("pickup_hours", v)} />
       <SettingsField label="Реквизиты для оплаты" value={f.payment_info} onChange={v => upd("payment_info", v)} />
+
+      <div className="my-4" style={{ borderTop: `2px dashed ${C.line}` }}></div>
+      <SettingsField label="Налог, % с оборота" value={f.tax_percent} onChange={v => upd("tax_percent", v)} type="number" />
+      <div className="text-xs -mt-2 mb-3" style={{ color: C.inkSoft, fontFamily: F.body }}>
+        Для ИП на упрощённой декларации в Казахстане обычно 3%. Уточните ставку у бухгалтера.
+      </div>
 
       <button onClick={save} disabled={busy} className="w-full py-3 rounded-xl font-bold text-white mt-2 transition-all active:scale-[0.98]"
         style={{ background: ok ? C.ready : C.stamp, fontFamily: F.body, opacity: busy ? 0.6 : 1 }}>
